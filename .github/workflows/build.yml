@@ -1,0 +1,45 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.0'
+
+      - name: Build analytics.php
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          php build.php --version "$VERSION"
+
+      - name: Verify build
+        run: |
+          test -f analytics.php
+          php -l analytics.php
+          FILE_SIZE=$(wc -c < analytics.php)
+          echo "File size: ${FILE_SIZE} bytes"
+          # Verify key functions exist
+          grep -q "function db(" analytics.php
+          grep -q "function track_hit(" analytics.php
+          grep -q "function render_dashboard(" analytics.php
+          grep -q "function auth_check(" analytics.php
+          echo "All key functions verified."
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: analytics.php
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

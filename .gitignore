@@ -1,0 +1,32 @@
+# Build output
+analytics.php
+
+# Database files
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.mm_db_marker
+.mm_db_marker.php
+
+# Geo database (downloaded at runtime)
+IP2LOCATION-LITE-DB1.BIN
+
+# Dependencies
+/vendor/
+composer.lock
+composer.phar
+
+# PHPUnit cache
+.phpunit.cache/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini

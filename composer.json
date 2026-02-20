@@ -1,0 +1,47 @@
+{
+    "name": "dobromirdikov/mintymetrics",
+    "description": "Single-file, cookie-free, privacy-first web analytics for PHP",
+    "type": "project",
+    "license": "MIT",
+    "homepage": "https://github.com/dobromirdikov/mintymetrics",
+    "keywords": [
+        "analytics",
+        "web-analytics",
+        "privacy",
+        "cookie-free",
+        "self-hosted",
+        "php",
+        "sqlite",
+        "gdpr"
+    ],
+    "authors": [
+        {
+            "name": "Minty Analyst",
+            "homepage": "https://mintyanalyst.com"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/dobromirdikov/mintymetrics/issues",
+        "source": "https://github.com/dobromirdikov/mintymetrics"
+    },
+    "require": {
+        "php": ">=8.0",
+        "ext-sqlite3": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.0"
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "MintyMetrics\\Tests\\": "tests/"
+        },
+        "files": ["tests/bootstrap_functions.php"]
+    },
+    "scripts": {
+        "test": "phpunit",
+        "test:unit": "phpunit --testsuite=Unit",
+        "test:integration": "phpunit --testsuite=Integration",
+        "test:coverage": "phpunit --coverage-text",
+        "build": "php build.php"
+    }
+}
