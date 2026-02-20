@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/dobromirdikov/mintymetrics/actions/workflows/test.yml"><img src="https://github.com/dobromirdikov/mintymetrics/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
-  <a href="https://www.php.net/"><img src="https://img.shields.io/badge/PHP-8.0%2B-777BB4?logo=php&logoColor=white" alt="PHP 8.0+"></a>
+  <a href="https://www.php.net/"><img src="https://img.shields.io/badge/PHP-8.1%2B-777BB4?logo=php&logoColor=white" alt="PHP 8.1+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
 </p>
 
@@ -77,7 +77,7 @@ Track multiple sites from one central dashboard.
 
 ## Requirements
 
-- PHP 8.0+
+- PHP 8.1+
 - SQLite3 extension (enabled by default on most hosts)
 - Write permission for the database file
 

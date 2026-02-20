@@ -25,7 +25,7 @@
         "source": "https://github.com/dobromirdikov/mintymetrics"
     },
     "require": {
-        "php": ">=8.0",
+        "php": ">=8.1",
         "ext-sqlite3": "*"
     },
     "require-dev": {
