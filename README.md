@@ -133,7 +133,7 @@ composer test:integration     # Integration tests only
 composer test -- --filter=UserAgent   # Single test class
 ```
 
-Tests require PHP 8.0+ and the SQLite3 extension. The test suite uses temporary SQLite files that are cleaned up automatically.
+Tests require PHP 8.1+ and the SQLite3 extension. The test suite uses temporary SQLite files that are cleaned up automatically.
 
 ## Security
 
