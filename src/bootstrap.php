@@ -268,6 +268,9 @@ function session_init(): void {
 
     $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
 
+    // Set GC lifetime to 30 days so "remember me" sessions survive server-side
+    \ini_set('session.gc_maxlifetime', 30 * 24 * 60 * 60);
+
     \session_set_cookie_params([
         'lifetime' => 0,
         'path'     => '/',
@@ -280,9 +283,19 @@ function session_init(): void {
     \session_name('mm_session');
     \session_start();
 
-    // "Remember me" sessions: refresh the 30-day cookie and regenerate daily
+    // "Remember me" sessions: regenerate daily, then refresh the 30-day cookie
     if (!empty($_SESSION['_mm_remember'])) {
         $lifetime = 30 * 24 * 60 * 60;
+
+        // Regenerate session ID daily (do this BEFORE setcookie so we use the current ID)
+        if (!isset($_SESSION['_mm_created'])) {
+            $_SESSION['_mm_created'] = \time();
+        } elseif (\time() - $_SESSION['_mm_created'] > 86400) {
+            \session_regenerate_id(true);
+            $_SESSION['_mm_created'] = \time();
+        }
+
+        // Refresh the 30-day cookie with the (possibly new) session ID
         \setcookie(\session_name(), \session_id(), [
             'expires'  => \time() + $lifetime,
             'path'     => '/',
@@ -290,12 +303,6 @@ function session_init(): void {
             'httponly'  => true,
             'samesite' => 'Strict',
         ]);
-        if (!isset($_SESSION['_mm_created'])) {
-            $_SESSION['_mm_created'] = \time();
-        } elseif (\time() - $_SESSION['_mm_created'] > 86400) {
-            \session_regenerate_id(true);
-            $_SESSION['_mm_created'] = \time();
-        }
         return;
     }
 
