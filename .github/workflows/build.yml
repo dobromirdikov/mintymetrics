@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,7 +19,7 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.0'
+          php-version: '8.1'
 
       - name: Build analytics.php
         run: |
@@ -29,7 +32,6 @@ jobs:
           php -l analytics.php
           FILE_SIZE=$(wc -c < analytics.php)
           echo "File size: ${FILE_SIZE} bytes"
-          # Verify key functions exist
           grep -q "function db(" analytics.php
           grep -q "function track_hit(" analytics.php
           grep -q "function render_dashboard(" analytics.php
