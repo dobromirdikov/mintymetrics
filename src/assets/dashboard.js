@@ -16,7 +16,6 @@ var MM = {
         this.setRange('7d');
         this.bindEvents();
         this.loadSites();
-        this.startLivePolling();
         this.bindModalEvents();
         this.checkAutoOpen();
     },
@@ -193,6 +192,7 @@ var MM = {
             if (!wrapper || !d.sites || d.sites.length < 2) {
                 if (wrapper) wrapper.style.display = 'none';
                 if (d.sites && d.sites.length === 1) self.site = d.sites[0];
+                self.startLivePolling();
                 return;
             }
             self._sites = d.sites;
@@ -209,6 +209,7 @@ var MM = {
             self._updateSiteLabel();
             self._applySiteSelection();
             if (savedArr.length > 0) self.loadAll();
+            self.startLivePolling();
         });
     },
 
@@ -283,7 +284,7 @@ var MM = {
             this._applySiteSelection();
             var self = this;
             clearTimeout(this._siteDebounce);
-            this._siteDebounce = setTimeout(function() { self.loadAll(); }, 600);
+            this._siteDebounce = setTimeout(function() { self.loadAll(); self.pollLive(); }, 600);
             return;
         }
 
@@ -305,7 +306,7 @@ var MM = {
         this._applySiteSelection();
         var self = this;
         clearTimeout(this._siteDebounce);
-        this._siteDebounce = setTimeout(function() { self.loadAll(); }, 600);
+        this._siteDebounce = setTimeout(function() { self.loadAll(); self.pollLive(); }, 600);
     },
 
     loadUTM: function(group) {
