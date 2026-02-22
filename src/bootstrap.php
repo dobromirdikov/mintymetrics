@@ -271,6 +271,16 @@ function session_init(): void {
     // Set GC lifetime to 30 days so "remember me" sessions survive server-side
     \ini_set('session.gc_maxlifetime', 30 * 24 * 60 * 60);
 
+    // Use a dedicated session directory so system-wide GC crons
+    // and other PHP apps cannot prune our long-lived sessions.
+    $sessionDir = \dirname(get_db_path()) . '/mm_sessions';
+    if (!\is_dir($sessionDir)) {
+        @\mkdir($sessionDir, 0700, true);
+    }
+    if (\is_dir($sessionDir) && \is_writable($sessionDir)) {
+        \ini_set('session.save_path', $sessionDir);
+    }
+
     \session_set_cookie_params([
         'lifetime' => 0,
         'path'     => '/',
