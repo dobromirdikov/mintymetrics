@@ -131,6 +131,50 @@ abstract class IntegrationTestCase extends TestCase
     }
 
     /**
+     * Insert a test event directly into the database.
+     */
+    protected function insertEvent(array $data = []): int
+    {
+        $defaults = [
+            'site' => 'test.com',
+            'visitor_hash' => hash('sha256', 'test_visitor_' . uniqid()),
+            'name' => 'test_event',
+            'value' => null,
+            'props' => null,
+            'page_path' => null,
+            'country_code' => null,
+            'device_type' => 'desktop',
+            'browser' => 'Chrome',
+            'os' => 'Windows',
+            'created_at' => time(),
+        ];
+
+        $row = array_merge($defaults, $data);
+
+        $stmt = self::$testDb->prepare('
+            INSERT INTO events (site, visitor_hash, name, value, props, page_path,
+                country_code, device_type, browser, os, created_at)
+            VALUES (:site, :hash, :name, :value, :props, :page,
+                :country, :device, :browser, :os, :created_at)
+        ');
+
+        $stmt->bindValue(':site', $row['site'], SQLITE3_TEXT);
+        $stmt->bindValue(':hash', $row['visitor_hash'], SQLITE3_TEXT);
+        $stmt->bindValue(':name', $row['name'], SQLITE3_TEXT);
+        $stmt->bindValue(':value', $row['value'], $row['value'] !== null ? SQLITE3_TEXT : SQLITE3_NULL);
+        $stmt->bindValue(':props', $row['props'], $row['props'] !== null ? SQLITE3_TEXT : SQLITE3_NULL);
+        $stmt->bindValue(':page', $row['page_path'], $row['page_path'] !== null ? SQLITE3_TEXT : SQLITE3_NULL);
+        $stmt->bindValue(':country', $row['country_code'], $row['country_code'] ? SQLITE3_TEXT : SQLITE3_NULL);
+        $stmt->bindValue(':device', $row['device_type'], SQLITE3_TEXT);
+        $stmt->bindValue(':browser', $row['browser'], SQLITE3_TEXT);
+        $stmt->bindValue(':os', $row['os'], SQLITE3_TEXT);
+        $stmt->bindValue(':created_at', $row['created_at'], SQLITE3_INTEGER);
+        $stmt->execute();
+
+        return (int) self::$testDb->lastInsertRowID();
+    }
+
+    /**
      * Set a config value in the test database.
      */
     protected function setConfig(string $key, string $value): void

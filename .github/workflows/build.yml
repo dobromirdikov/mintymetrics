@@ -34,8 +34,10 @@ jobs:
           echo "File size: ${FILE_SIZE} bytes"
           grep -q "function db(" analytics.php
           grep -q "function track_hit(" analytics.php
+          grep -q "function track_event(" analytics.php
           grep -q "function render_dashboard(" analytics.php
           grep -q "function auth_check(" analytics.php
+          grep -q "CREATE TABLE IF NOT EXISTS events" analytics.php
           echo "All key functions verified."
 
       - name: Create Release

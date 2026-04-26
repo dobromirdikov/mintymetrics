@@ -49,6 +49,8 @@ function handle_api(): void {
             'languages'  => api_languages($site, $fromTs, $toTs, $limit, $offset),
             'live'       => api_live($site),
             'sites'      => api_sites(),
+            'events'     => api_events($site, $fromTs, $toTs, $limit, $offset),
+            'event_values' => api_event_values($site, $fromTs, $toTs, $_GET['name'] ?? '', $limit, $offset),
             default      => ['error' => 'Unknown action'],
         };
         echo \json_encode($data);
@@ -436,6 +438,82 @@ function api_sites(): array {
 }
 
 // ─── Query Helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Top events by name. Returns total count and unique visitor count per event name.
+ */
+function api_events(string $site, int $fromTs, int $toTs, int $limit, int $offset): array {
+    $db = db();
+
+    if (!table_exists($db, 'events')) {
+        return ['rows' => []];
+    }
+
+    $where = 'created_at BETWEEN :from AND :to';
+    $params = [':from' => $fromTs, ':to' => $toTs];
+    apply_site_filter($where, $params, $site);
+
+    $stmt = $db->prepare("
+        SELECT name,
+               COUNT(*) as count,
+               COUNT(DISTINCT visitor_hash) as uniques
+        FROM events
+        WHERE {$where}
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT :limit OFFSET :offset
+    ");
+    bind_params($stmt, $params);
+    $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
+    $stmt->bindValue(':offset', $offset, SQLITE3_INTEGER);
+
+    return ['rows' => fetch_all($stmt)];
+}
+
+/**
+ * Top values for a single event name. Used by the dashboard drilldown.
+ * NULL/empty values are grouped under "(no value)".
+ */
+function api_event_values(string $site, int $fromTs, int $toTs, string $eventName, int $limit, int $offset): array {
+    if (!\preg_match('/^[a-zA-Z0-9_]{1,64}$/', $eventName)) {
+        return ['error' => 'Invalid event name'];
+    }
+
+    $db = db();
+    if (!table_exists($db, 'events')) {
+        return ['rows' => [], 'name' => $eventName];
+    }
+
+    $where = 'created_at BETWEEN :from AND :to AND name = :name';
+    $params = [':from' => $fromTs, ':to' => $toTs, ':name' => $eventName];
+    apply_site_filter($where, $params, $site);
+
+    $stmt = $db->prepare("
+        SELECT COALESCE(NULLIF(value, ''), '(no value)') as value,
+               COUNT(*) as count,
+               COUNT(DISTINCT visitor_hash) as uniques
+        FROM events
+        WHERE {$where}
+        GROUP BY value
+        ORDER BY count DESC
+        LIMIT :limit OFFSET :offset
+    ");
+    bind_params($stmt, $params);
+    $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
+    $stmt->bindValue(':offset', $offset, SQLITE3_INTEGER);
+
+    return ['rows' => fetch_all($stmt), 'name' => $eventName];
+}
+
+/**
+ * Check if a table exists. Used to gate event queries on installs that have
+ * not yet completed the v2→v3 migration.
+ */
+function table_exists(\SQLite3 $db, string $name): bool {
+    $stmt = $db->prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:name LIMIT 1");
+    $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+    return (bool) $stmt->execute()->fetchArray();
+}
 
 /**
  * Bind named parameters to a prepared statement.

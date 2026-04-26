@@ -154,6 +154,18 @@ CSSBLOCK;
         </div>
 
         <div class="mm-col">
+            <div class="mm-card mm-card--events">
+                <div class="mm-card__header">
+                    <h2 id="eventsHeading">Top Events</h2>
+                    <button class="mm-events-back" id="eventsBack" hidden type="button">&larr; All events</button>
+                    <button class="mm-export-btn" data-export="events" title="Export CSV"></button>
+                </div>
+                <table class="mm-table" id="tableEvents">
+                    <thead><tr><th>Event</th><th>Count</th><th>Users</th></tr></thead>
+                    <tbody><tr><td colspan="3"><div class="mm-loading"><div class="mm-spinner"></div></div></td></tr></tbody>
+                </table>
+            </div>
+
             <div class="mm-card">
                 <div class="mm-card__header"><h2>Countries</h2></div>';
 
@@ -438,6 +450,8 @@ function render_help(): void {
     echo '<div class="mm-help">
     <p class="mm-help-intro">Add tracking to your websites. You can rename <code>' . e($filename) . '</code> to anything &mdash; all routing is self-referencing.</p>
 
+    <h2 class="mm-help-group-title">Pageviews</h2>
+
     <div class="mm-help-section">
         <h3 class="mm-help-section-title">PHP Sites <span class="mm-help-badge">same server</span></h3>
         <p>Add these two lines to each page you want to track:</p>
@@ -451,6 +465,29 @@ function render_help(): void {
         <p>Track one or more external sites from this dashboard. Add a script tag to each site&rsquo;s <code>&lt;head&gt;</code>:</p>
         <div class="mm-help-code"><code>&lt;script defer src=&quot;' . $scriptUrl . '?js&amp;site=<em>yoursite.com</em>&quot;&gt;&lt;/script&gt;</code></div>
         <p class="mm-help-note">Replace <em>yoursite.com</em> with the site&rsquo;s domain. Each domain must be added in <a href="?settings" data-modal="settings">Settings</a> &rarr; Allowed Domains. All sites appear in one dashboard via the site switcher.</p>
+    </div>
+
+    <h2 class="mm-help-group-title">Custom Events <span class="mm-help-badge mm-help-badge--new">new in v1.1</span></h2>
+
+    <div class="mm-help-section">
+        <h3 class="mm-help-section-title">Track user actions</h3>
+        <p>Once pageview tracking is wired up, record any discrete action &mdash; signups, exports, button clicks &mdash; and watch them appear in the &ldquo;Top Events&rdquo; card below.</p>
+        <p class="mm-help-note">Step 1. Add this stub once, before the tracker script (it queues calls until the tracker loads):</p>
+        <div class="mm-help-code"><code>&lt;script&gt;window.mm=window.mm||function(){(window.mm.q=window.mm.q||[]).push(arguments)};&lt;/script&gt;</code></div>
+        <p class="mm-help-note">Step 2. Call <code>mm(\'track\', name, value?, props?)</code> anywhere in your JavaScript:</p>
+        <div class="mm-help-code"><code>mm(\'track\', \'signup\');                            // name only
+mm(\'track\', \'signup\', \'pro\');                     // + value
+mm(\'track\', \'export\', \'stl\', { scope: \'scene\' }); // + props (object)</code></div>
+        <p class="mm-help-note">Names: <code>a-z</code>, <code>0-9</code>, <code>_</code>, max 64 chars. Value: any string up to 256 chars. Props: any JSON object up to 1 KB. DNT/GPC and bot filtering apply, same as pageviews.</p>
+    </div>
+
+    <div class="mm-help-section">
+        <h3 class="mm-help-section-title">From a server / curl <span class="mm-help-badge">no JS needed</span></h3>
+        <p>For server-side or non-browser callers, hit the endpoint directly. <code>_v=1</code> is required (JS-verify gate).</p>
+        <div class="mm-help-code"><code>curl -A "MyApp/1.0" "' . $scriptUrl . '?event&amp;site=<em>yoursite.com</em>&amp;name=<em>signup</em>&amp;value=<em>pro</em>&amp;_v=1"</code></div>
+        <p class="mm-help-note"><strong>Always pass an explicit User-Agent.</strong> The bot filter blocks default curl/wget/python-requests/go-http-client UAs &mdash; events fired without <code>-A</code> are silently dropped. Use any non-bot string (your app name, e.g. <code>MyApp/1.0</code>).</p>
+        <p class="mm-help-note">For structured props, URL-encode the JSON and pass as <code>&amp;p=...</code>:</p>
+        <div class="mm-help-code"><code>...&amp;p=%7B%22scope%22%3A%22scene%22%7D</code></div>
     </div>
 
     <p class="mm-help-verify">Verify the URL above matches your public-facing address, especially behind reverse proxies.</p>

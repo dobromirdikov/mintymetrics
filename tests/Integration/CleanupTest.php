@@ -251,4 +251,31 @@ class CleanupTest extends IntegrationTestCase
         $row = self::$testDb->querySingle('SELECT * FROM mm_logs LIMIT 1', true);
         $this->assertSame('warning', $row['level']);
     }
+
+    // ─── Events Pruning ─────────────────────────────────────────────────
+
+    public function testCleanupPrunesOldEvents(): void
+    {
+        $retentionDays = (int) \MintyMetrics\get_config('data_retention_days', \MintyMetrics\DATA_RETENTION_DAYS);
+        $cutoffTs = strtotime("-{$retentionDays} days");
+
+        $oldTs = $cutoffTs - (3 * 86400);
+        $recentTs = time() - 3600;
+
+        $this->insertEvent(['name' => 'old_event', 'created_at' => $oldTs]);
+        $this->insertEvent(['name' => 'recent_event', 'created_at' => $recentTs]);
+
+        // cleanup_run() needs at least one expired hit to drive its loop, but the
+        // event prune step runs unconditionally. Add one expired hit so summarize_day
+        // is exercised but not strictly required for the events assertion.
+        $this->insertHit(['page_path' => '/old', 'created_at' => $oldTs]);
+
+        \MintyMetrics\cleanup_run();
+
+        $remaining = self::$testDb->querySingle('SELECT COUNT(*) FROM events');
+        $this->assertSame(1, (int) $remaining);
+
+        $row = self::$testDb->querySingle('SELECT name FROM events LIMIT 1', true);
+        $this->assertSame('recent_event', $row['name']);
+    }
 }

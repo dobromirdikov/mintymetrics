@@ -55,6 +55,13 @@ if (isset($_GET['beacon'])) {
     return;
 }
 
+if (isset($_GET['event'])) {
+    if (!db_marker_exists()) { serve_pixel(); return; }
+    track_event();
+    serve_pixel();
+    return;
+}
+
 if (isset($_GET['js']) && isset($_GET['site'])) {
     if (!db_marker_exists()) { \header('Content-Type: application/javascript'); return; }
     serve_js($_GET['site']);

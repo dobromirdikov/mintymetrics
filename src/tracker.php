@@ -175,6 +175,124 @@ function track_beacon(): void {
 }
 
 /**
+ * Record a custom event. Mirrors track_hit() validation gates so events get the
+ * same bot/DNT/rate-limit/domain protection. Uses a separate rate-limit bucket
+ * so a quick burst of events does not throttle pageview tracking.
+ */
+function track_event(): void {
+    try {
+        if (empty($_GET['_v'])) {
+            return;
+        }
+
+        $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+        if (is_bot($ua)) {
+            return;
+        }
+
+        if (get_config('respect_dnt', '1') === '1') {
+            if (($_SERVER['HTTP_DNT'] ?? '') === '1' || ($_SERVER['HTTP_SEC_GPC'] ?? '') === '1') {
+                return;
+            }
+        }
+
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+        $normalizedIp = normalize_ip($ip);
+        $ipHash = \hash('sha256', $normalizedIp);
+
+        if (check_rate_limit($ipHash, 'evt:')) {
+            return;
+        }
+
+        $site = sanitize_site($_GET['site'] ?? ($_SERVER['HTTP_HOST'] ?? ''));
+        if (!validate_domain($site)) {
+            return;
+        }
+
+        $name = $_GET['name'] ?? '';
+        if (!validate_event_name($name)) {
+            return;
+        }
+
+        $value = isset($_GET['value']) && $_GET['value'] !== ''
+            ? truncate((string) $_GET['value'], MAX_EVENT_VALUE)
+            : null;
+
+        $props = isset($_GET['p']) && $_GET['p'] !== ''
+            ? validate_event_props((string) $_GET['p'])
+            : null;
+
+        $pagePath = isset($_GET['page']) && $_GET['page'] !== ''
+            ? truncate((string) $_GET['page'], MAX_PAGE_PATH)
+            : null;
+
+        $salt = get_salt();
+        $visitorHash = generate_visitor_hash($ip, $ua, $salt);
+
+        $uaData = parse_ua($ua);
+
+        $countryCode = null;
+        if (get_config('enable_geo', '1') === '1' && geo_available()) {
+            $countryCode = geo_lookup($ip);
+        }
+
+        $db = db();
+        $stmt = $db->prepare('
+            INSERT INTO events (site, visitor_hash, name, value, props, page_path,
+                country_code, device_type, browser, os)
+            VALUES (:site, :hash, :name, :value, :props, :page,
+                :country, :device, :browser, :os)
+        ');
+
+        $stmt->bindValue(':site', $site, SQLITE3_TEXT);
+        $stmt->bindValue(':hash', $visitorHash, SQLITE3_TEXT);
+        $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+        $stmt->bindValue(':value', $value, $value !== null ? SQLITE3_TEXT : SQLITE3_NULL);
+        $stmt->bindValue(':props', $props, $props !== null ? SQLITE3_TEXT : SQLITE3_NULL);
+        $stmt->bindValue(':page', $pagePath, $pagePath !== null ? SQLITE3_TEXT : SQLITE3_NULL);
+        $stmt->bindValue(':country', $countryCode, $countryCode ? SQLITE3_TEXT : SQLITE3_NULL);
+        $stmt->bindValue(':device', $uaData['device'], SQLITE3_TEXT);
+        $stmt->bindValue(':browser', $uaData['browser'], SQLITE3_TEXT);
+        $stmt->bindValue(':os', $uaData['os'], SQLITE3_TEXT);
+
+        $stmt->execute();
+
+    } catch (\Exception $e) {
+        log_error('track_event: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Validate an event name. Allowed: ASCII letters, digits, underscore; 1..MAX_EVENT_NAME chars.
+ */
+function validate_event_name(string $name): bool {
+    if ($name === '' || \strlen($name) > MAX_EVENT_NAME) {
+        return false;
+    }
+    return (bool) \preg_match('/^[a-zA-Z0-9_]+$/', $name);
+}
+
+/**
+ * Validate an event props payload.
+ * Returns the normalized JSON string (re-encoded canonically) on success, or null otherwise.
+ * Caller decides whether to store NULL or drop the entire event on null.
+ */
+function validate_event_props(string $raw): ?string {
+    if ($raw === '' || \strlen($raw) > MAX_EVENT_PROPS_JSON) {
+        return null;
+    }
+    $decoded = \json_decode($raw, true);
+    if (!\is_array($decoded) || \json_last_error() !== JSON_ERROR_NONE) {
+        return null;
+    }
+    $reencoded = \json_encode($decoded);
+    if ($reencoded === false || \strlen($reencoded) > MAX_EVENT_PROPS_JSON) {
+        return null;
+    }
+    return $reencoded;
+}
+
+/**
  * Serve the tracking JS snippet for hub mode.
  */
 function serve_js(string $site): void {
@@ -280,14 +398,18 @@ function is_bot(string $ua): bool {
 /**
  * Check if the request should be rate-limited.
  * Returns true if the request should be DROPPED.
+ *
+ * The optional $bucket prefix isolates rate-limit keys per endpoint
+ * (e.g. 'evt:' for ?event so a fast event burst doesn't throttle pageviews).
  */
-function check_rate_limit(string $ipHash): bool {
+function check_rate_limit(string $ipHash, string $bucket = ''): bool {
     try {
         $db = db();
         $now = \microtime(true);
+        $key = $bucket . $ipHash;
 
         $stmt = $db->prepare('SELECT last_hit_at FROM rate_limit WHERE ip_hash = :hash');
-        $stmt->bindValue(':hash', $ipHash, SQLITE3_TEXT);
+        $stmt->bindValue(':hash', $key, SQLITE3_TEXT);
         $result = $stmt->execute();
         $row = $result->fetchArray(SQLITE3_ASSOC);
 
@@ -297,7 +419,7 @@ function check_rate_limit(string $ipHash): bool {
 
         // Upsert
         $stmt = $db->prepare('INSERT OR REPLACE INTO rate_limit (ip_hash, last_hit_at) VALUES (:hash, :now)');
-        $stmt->bindValue(':hash', $ipHash, SQLITE3_TEXT);
+        $stmt->bindValue(':hash', $key, SQLITE3_TEXT);
         $stmt->bindValue(':now', $now, SQLITE3_FLOAT);
         $stmt->execute();
 

@@ -6,6 +6,35 @@
     var endpoint = '{{ENDPOINT}}';
     var site = '{{SITE}}';
 
+    // Public API: window.mm('track', name, value?, props?)
+    // Caller stub: window.mm = window.mm || function(){(window.mm.q=window.mm.q||[]).push(arguments)};
+    var queued = (window.mm && window.mm.q) ? window.mm.q : [];
+
+    function track(name, value, props) {
+        if (!name) return;
+        var url = endpoint + '?event&site=' + encodeURIComponent(site)
+                + '&name=' + encodeURIComponent(name)
+                + '&_v=1'
+                + '&page=' + encodeURIComponent(location.pathname + location.search);
+        if (value !== undefined && value !== null) {
+            url += '&value=' + encodeURIComponent(String(value));
+        }
+        if (props && typeof props === 'object') {
+            try { url += '&p=' + encodeURIComponent(JSON.stringify(props)); } catch (e) {}
+        }
+        new Image().src = url;
+    }
+
+    window.mm = function(cmd) {
+        var args = Array.prototype.slice.call(arguments, 1);
+        if (cmd === 'track') track.apply(null, args);
+    };
+
+    // Drain calls queued before the script loaded
+    for (var i = 0; i < queued.length; i++) {
+        try { window.mm.apply(null, queued[i]); } catch (e) {}
+    }
+
     // Collect page data
     var data = {
         site: site,

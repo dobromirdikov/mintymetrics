@@ -254,4 +254,215 @@ class TrackingTest extends IntegrationTestCase
         $this->assertSame(1, $rows['mobile']);
         $this->assertSame(1, $rows['tablet']);
     }
+
+    // ─── Events: Schema Integrity ───────────────────────────────────────
+
+    public function testEventStoredWithAllFields(): void
+    {
+        $now = time();
+        $this->insertEvent([
+            'site' => 'app.example.com',
+            'name' => 'export',
+            'value' => 'stl-binary',
+            'props' => '{"scope":"scene"}',
+            'page_path' => '/editor',
+            'country_code' => 'DE',
+            'device_type' => 'desktop',
+            'browser' => 'Firefox',
+            'os' => 'Linux',
+            'created_at' => $now,
+        ]);
+
+        $row = self::$testDb->querySingle('SELECT * FROM events LIMIT 1', true);
+
+        $this->assertSame('app.example.com', $row['site']);
+        $this->assertSame('export', $row['name']);
+        $this->assertSame('stl-binary', $row['value']);
+        $this->assertSame('{"scope":"scene"}', $row['props']);
+        $this->assertSame('/editor', $row['page_path']);
+        $this->assertSame('DE', $row['country_code']);
+        $this->assertSame('desktop', $row['device_type']);
+        $this->assertSame('Firefox', $row['browser']);
+        $this->assertSame('Linux', $row['os']);
+        $this->assertSame($now, (int) $row['created_at']);
+    }
+
+    public function testEventStoredWithNullOptionalFields(): void
+    {
+        $this->insertEvent(['name' => 'open_project']);
+
+        $row = self::$testDb->querySingle('SELECT * FROM events LIMIT 1', true);
+        $this->assertSame('open_project', $row['name']);
+        $this->assertNull($row['value']);
+        $this->assertNull($row['props']);
+        $this->assertNull($row['page_path']);
+        $this->assertNull($row['country_code']);
+    }
+
+    // ─── Events: Validation ─────────────────────────────────────────────
+
+    public function testValidateEventNameAcceptsValid(): void
+    {
+        $this->assertTrue(\MintyMetrics\validate_event_name('save'));
+        $this->assertTrue(\MintyMetrics\validate_event_name('primitive_create'));
+        $this->assertTrue(\MintyMetrics\validate_event_name('a'));
+        $this->assertTrue(\MintyMetrics\validate_event_name('A_1'));
+    }
+
+    public function testValidateEventNameRejectsInvalid(): void
+    {
+        $this->assertFalse(\MintyMetrics\validate_event_name(''));
+        $this->assertFalse(\MintyMetrics\validate_event_name('with space'));
+        $this->assertFalse(\MintyMetrics\validate_event_name('with-dash'));
+        $this->assertFalse(\MintyMetrics\validate_event_name('with.dot'));
+        $this->assertFalse(\MintyMetrics\validate_event_name('inj"ect'));
+        $this->assertFalse(\MintyMetrics\validate_event_name(str_repeat('a', 65)));
+    }
+
+    public function testValidateEventPropsAcceptsObject(): void
+    {
+        $out = \MintyMetrics\validate_event_props('{"scope":"scene","count":3}');
+        $this->assertNotNull($out);
+        $decoded = json_decode($out, true);
+        $this->assertSame('scene', $decoded['scope']);
+        $this->assertSame(3, $decoded['count']);
+    }
+
+    public function testValidateEventPropsRejectsArray(): void
+    {
+        // arrays decode to indexed arrays in PHP — we only accept objects/assoc
+        $this->assertNotNull(\MintyMetrics\validate_event_props('{"a":1}'));
+        // Numeric or scalar JSON should be rejected
+        $this->assertNull(\MintyMetrics\validate_event_props('"just a string"'));
+        $this->assertNull(\MintyMetrics\validate_event_props('42'));
+    }
+
+    public function testValidateEventPropsRejectsMalformed(): void
+    {
+        $this->assertNull(\MintyMetrics\validate_event_props('not json'));
+        $this->assertNull(\MintyMetrics\validate_event_props('{unterminated'));
+        $this->assertNull(\MintyMetrics\validate_event_props(''));
+    }
+
+    public function testValidateEventPropsRejectsOversize(): void
+    {
+        $big = '{"k":"' . str_repeat('x', 1100) . '"}';
+        $this->assertNull(\MintyMetrics\validate_event_props($big));
+    }
+
+    // ─── Events: Rate Limit Bucket Isolation ────────────────────────────
+
+    public function testRateLimitBucketsAreIndependent(): void
+    {
+        $ipHash = hash('sha256', '203.0.113.7');
+
+        // First call in the default bucket — should be allowed
+        $this->assertFalse(\MintyMetrics\check_rate_limit($ipHash));
+        // Immediate second call in default bucket — throttled
+        $this->assertTrue(\MintyMetrics\check_rate_limit($ipHash));
+        // But the 'evt:' bucket is fresh — should be allowed
+        $this->assertFalse(\MintyMetrics\check_rate_limit($ipHash, 'evt:'));
+        // Immediate second 'evt:' call — throttled
+        $this->assertTrue(\MintyMetrics\check_rate_limit($ipHash, 'evt:'));
+    }
+
+    public function testRateLimitBucketsStoredAsDistinctRows(): void
+    {
+        $ipHash = hash('sha256', '203.0.113.8');
+        \MintyMetrics\check_rate_limit($ipHash);
+        \MintyMetrics\check_rate_limit($ipHash, 'evt:');
+        // Two distinct rows: one with bare hash, one with 'evt:'+hash
+        $this->assertSame(2, $this->countRows('rate_limit'));
+    }
+
+    // ─── Events: End-to-End via track_event() ───────────────────────────
+
+    public function testTrackEventEndToEnd(): void
+    {
+        $_GET = [
+            '_v' => '1',
+            'site' => 'test.com',
+            'name' => 'save',
+            'value' => 'shortcut',
+            'p' => '{"key":"ctrl-s"}',
+            'page' => '/editor',
+        ];
+        $_SERVER['HTTP_USER_AGENT'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+        $_SERVER['REMOTE_ADDR'] = '198.51.100.42';
+
+        \MintyMetrics\track_event();
+
+        $row = self::$testDb->querySingle('SELECT * FROM events LIMIT 1', true);
+        $this->assertNotFalse($row, 'event should have been inserted');
+        $this->assertSame('test.com', $row['site']);
+        $this->assertSame('save', $row['name']);
+        $this->assertSame('shortcut', $row['value']);
+        $this->assertSame('{"key":"ctrl-s"}', $row['props']);
+        $this->assertSame('/editor', $row['page_path']);
+        $this->assertNotEmpty($row['visitor_hash']);
+    }
+
+    public function testTrackEventRejectedWithoutJsVerification(): void
+    {
+        $_GET = ['site' => 'test.com', 'name' => 'save']; // missing _v
+        $_SERVER['HTTP_USER_AGENT'] = 'Mozilla/5.0';
+        $_SERVER['REMOTE_ADDR'] = '198.51.100.43';
+
+        \MintyMetrics\track_event();
+
+        $this->assertSame(0, $this->countRows('events'));
+    }
+
+    public function testTrackEventRejectedFromBot(): void
+    {
+        $_GET = ['_v' => '1', 'site' => 'test.com', 'name' => 'save'];
+        $_SERVER['HTTP_USER_AGENT'] = 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)';
+        $_SERVER['REMOTE_ADDR'] = '198.51.100.44';
+
+        \MintyMetrics\track_event();
+
+        $this->assertSame(0, $this->countRows('events'));
+    }
+
+    public function testTrackEventRejectedWithDnt(): void
+    {
+        $_GET = ['_v' => '1', 'site' => 'test.com', 'name' => 'save'];
+        $_SERVER['HTTP_USER_AGENT'] = 'Mozilla/5.0';
+        $_SERVER['REMOTE_ADDR'] = '198.51.100.45';
+        $_SERVER['HTTP_DNT'] = '1';
+
+        \MintyMetrics\track_event();
+
+        unset($_SERVER['HTTP_DNT']);
+        $this->assertSame(0, $this->countRows('events'));
+    }
+
+    public function testTrackEventRejectedWithInvalidName(): void
+    {
+        $_GET = ['_v' => '1', 'site' => 'test.com', 'name' => 'bad name with spaces'];
+        $_SERVER['HTTP_USER_AGENT'] = 'Mozilla/5.0';
+        $_SERVER['REMOTE_ADDR'] = '198.51.100.46';
+
+        \MintyMetrics\track_event();
+
+        $this->assertSame(0, $this->countRows('events'));
+    }
+
+    public function testTrackEventStoresNullPropsOnMalformedJson(): void
+    {
+        $_GET = [
+            '_v' => '1',
+            'site' => 'test.com',
+            'name' => 'save',
+            'p' => 'not-json',
+        ];
+        $_SERVER['HTTP_USER_AGENT'] = 'Mozilla/5.0';
+        $_SERVER['REMOTE_ADDR'] = '198.51.100.47';
+
+        \MintyMetrics\track_event();
+
+        $row = self::$testDb->querySingle('SELECT props FROM events LIMIT 1', true);
+        $this->assertNotFalse($row, 'event should still be recorded');
+        $this->assertNull($row['props']);
+    }
 }

@@ -17,6 +17,9 @@ const MAX_UTM_FIELD        = 256;
 const MAX_SCREEN_RES       = 20;
 const MAX_LANGUAGE         = 20;
 const MAX_SITE_DOMAIN      = 253;
+const MAX_EVENT_NAME       = 64;
+const MAX_EVENT_VALUE      = 256;
+const MAX_EVENT_PROPS_JSON = 1024;
 const LOG_MAX_ENTRIES      = 1000;
 const DASHBOARD_TITLE      = 'MintyMetrics';
 

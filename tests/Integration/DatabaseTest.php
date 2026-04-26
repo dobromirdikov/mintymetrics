@@ -22,12 +22,13 @@ class DatabaseTest extends IntegrationTestCase
         $this->assertContains('settings', $tables);
         $this->assertContains('rate_limit', $tables);
         $this->assertContains('mm_logs', $tables);
+        $this->assertContains('events', $tables);
     }
 
     public function testSchemaVersionIsSet(): void
     {
         $version = self::$testDb->querySingle("SELECT value FROM settings WHERE key = 'schema_version'");
-        $this->assertSame('2', $version);
+        $this->assertSame('3', $version);
     }
 
     public function testSchemaCreatesIndexes(): void
@@ -44,6 +45,9 @@ class DatabaseTest extends IntegrationTestCase
         $this->assertContains('idx_hits_created', $indexes);
         $this->assertContains('idx_summaries_site_date', $indexes);
         $this->assertContains('idx_ratelimit_time', $indexes);
+        $this->assertContains('idx_events_site_created', $indexes);
+        $this->assertContains('idx_events_site_name', $indexes);
+        $this->assertContains('idx_events_visitor', $indexes);
     }
 
     public function testSchemaIdempotent(): void
@@ -228,14 +232,72 @@ class DatabaseTest extends IntegrationTestCase
         }
         $this->assertContains('last_active_at', $cols, 'v2 schema should have last_active_at');
 
-        // Verify schema version is now 2
+        // v1→v2 migration cascades through to v3 in a single db_init_with call
         $version = $v1Db->querySingle("SELECT value FROM settings WHERE key = 'schema_version'");
-        $this->assertSame('2', $version);
+        $this->assertSame('3', $version);
+
+        // The cascading v2→v3 should also have created the events table
+        $hasEvents = (int) $v1Db->querySingle("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='events'");
+        $this->assertSame(1, $hasEvents);
 
         $v1Db->close();
         @unlink($v1Path);
         @unlink($v1Path . '-wal');
         @unlink($v1Path . '-shm');
+    }
+
+    public function testSchemaMigrationV2ToV3CreatesEventsTable(): void
+    {
+        // Build a v2 DB by running db_init_with then rolling schema_version back.
+        $v2Path = sys_get_temp_dir() . '/mintymetrics_v2_' . uniqid() . '.sqlite';
+        $v2Db = new \SQLite3($v2Path);
+        $v2Db->exec('PRAGMA journal_mode = WAL');
+
+        \MintyMetrics\db_init_with($v2Db);
+
+        // Drop the events table and reset schema_version to 2 to simulate a v2 install
+        $v2Db->exec('DROP TABLE IF EXISTS events');
+        $v2Db->exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '2')");
+
+        $tables = [];
+        $r = $v2Db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='events'");
+        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+            $tables[] = $row['name'];
+        }
+        $this->assertNotContains('events', $tables, 'pre-migration: events table should not exist');
+
+        // Run migration
+        \MintyMetrics\db_init_with($v2Db);
+
+        // Verify events table now exists with all expected columns
+        $cols = [];
+        $r = $v2Db->query("PRAGMA table_info(events)");
+        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+            $cols[] = $row['name'];
+        }
+        foreach (['id', 'site', 'visitor_hash', 'name', 'value', 'props', 'page_path',
+                  'country_code', 'device_type', 'browser', 'os', 'created_at'] as $expected) {
+            $this->assertContains($expected, $cols, "events table missing column: {$expected}");
+        }
+
+        // Verify indexes
+        $indexes = [];
+        $r = $v2Db->query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='events'");
+        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+            $indexes[] = $row['name'];
+        }
+        $this->assertContains('idx_events_site_created', $indexes);
+        $this->assertContains('idx_events_site_name', $indexes);
+        $this->assertContains('idx_events_visitor', $indexes);
+
+        // Verify schema version bumped
+        $version = $v2Db->querySingle("SELECT value FROM settings WHERE key = 'schema_version'");
+        $this->assertSame('3', $version);
+
+        $v2Db->close();
+        @unlink($v2Path);
+        @unlink($v2Path . '-wal');
+        @unlink($v2Path . '-shm');
     }
 
     // ─── get_config / set_config Integration ─────────────────────────────

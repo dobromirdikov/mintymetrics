@@ -26,7 +26,7 @@ function export_csv(string $type, string $site, string $from, string $to): void 
 
     // Sanitize type for filename (allow-list)
     $safeType = match ($type) {
-        'pageviews', 'pages', 'referrers', 'utm', 'countries' => $type,
+        'pageviews', 'pages', 'referrers', 'utm', 'countries', 'events' => $type,
         default => 'export',
     };
     $filename = "mintymetrics-{$safeType}-{$from}-to-{$to}.csv";
@@ -111,6 +111,25 @@ function export_csv(string $type, string $site, string $from, string $to): void 
                 FROM hits WHERE {$where} AND country_code IS NOT NULL
                 GROUP BY country_code
                 ORDER BY visitors DESC
+            ");
+            bind_params($stmt, $params);
+            $result = $stmt->execute();
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+                \fputcsv($output, \array_values($row));
+            }
+            break;
+
+        case 'events':
+            \fputcsv($output, ['Date', 'Name', 'Value', 'Props', 'Visitor Hash', 'Page', 'Country', 'Device', 'Browser', 'OS']);
+            if (!table_exists($db, 'events')) {
+                break;
+            }
+            $stmt = $db->prepare("
+                SELECT datetime(created_at, 'unixepoch') as date, name, value, props, visitor_hash,
+                    page_path, country_code, device_type, browser, os
+                FROM events WHERE {$where}
+                ORDER BY created_at DESC
+                LIMIT " . EXPORT_MAX_ROWS . "
             ");
             bind_params($stmt, $params);
             $result = $stmt->execute();

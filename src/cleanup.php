@@ -46,6 +46,11 @@ function cleanup_run(): void {
             $stmt->execute();
         }
 
+        // Prune old raw events (no summarization in v1.1.0 — events fall off after retention)
+        $stmt = $db->prepare('DELETE FROM events WHERE created_at < :cutoff');
+        $stmt->bindValue(':cutoff', $cutoffTs, SQLITE3_INTEGER);
+        $stmt->execute();
+
         // Prune rate limit table
         $stmt = $db->prepare('DELETE FROM rate_limit WHERE last_hit_at < :cutoff');
         $stmt->bindValue(':cutoff', \microtime(true) - 60, SQLITE3_FLOAT);
@@ -64,6 +69,10 @@ function cleanup_run(): void {
             // Aggressive pruning: delete raw data older than 30 days
             $aggressiveCutoff = \strtotime('-30 days');
             $stmt = $db->prepare('DELETE FROM hits WHERE created_at < :cutoff');
+            $stmt->bindValue(':cutoff', $aggressiveCutoff, SQLITE3_INTEGER);
+            $stmt->execute();
+
+            $stmt = $db->prepare('DELETE FROM events WHERE created_at < :cutoff');
             $stmt->bindValue(':cutoff', $aggressiveCutoff, SQLITE3_INTEGER);
             $stmt->execute();
 

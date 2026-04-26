@@ -450,6 +450,26 @@ a:hover { color: var(--mm-primary-hover); text-decoration: underline; }
 .mm-export-btn:hover { border-color: var(--mm-primary); color: var(--mm-primary); }
 .mm-export-btn::before { content: '\2913 CSV'; }
 
+/* ─── Events ───────────────────────────────────────────────────────────────── */
+.mm-event-link {
+    color: var(--mm-primary);
+    text-decoration: none;
+    cursor: pointer;
+}
+.mm-event-link:hover { text-decoration: underline; }
+.mm-row-clickable { cursor: pointer; }
+.mm-events-back {
+    background: none;
+    border: 1px solid var(--mm-border);
+    border-radius: var(--mm-radius-sm);
+    padding: 4px 10px;
+    margin-left: var(--mm-space-sm, 8px);
+    cursor: pointer;
+    color: var(--mm-text-muted);
+    font-size: var(--mm-text-xs);
+}
+.mm-events-back:hover { border-color: var(--mm-primary); color: var(--mm-primary); }
+
 /* ─── Buttons ─────────────────────────────────────────────────────────────── */
 .mm-btn {
     display: inline-flex;
@@ -895,6 +915,23 @@ a:hover { color: var(--mm-primary-hover); text-decoration: underline; }
     color: var(--mm-text-muted);
     margin-left: var(--mm-space-xs);
 }
+.mm-help-badge--new {
+    color: var(--mm-primary);
+    border: 1px solid var(--mm-primary);
+    border-radius: var(--mm-radius-sm);
+    padding: 1px 6px;
+}
+.mm-help-group-title {
+    font-size: var(--mm-text-lg, 16px);
+    font-weight: 700;
+    margin: var(--mm-space-lg) 0 var(--mm-space-sm);
+    padding-top: var(--mm-space-sm);
+    border-top: 1px solid var(--mm-border);
+    display: flex;
+    align-items: center;
+    gap: var(--mm-space-xs);
+}
+.mm-help-group-title:first-of-type { border-top: 0; padding-top: 0; }
 .mm-help-section > p {
     font-size: var(--mm-text-sm);
     color: var(--mm-text-secondary);
@@ -924,7 +961,8 @@ a:hover { color: var(--mm-primary-hover); text-decoration: underline; }
     background: none;
     padding: 0;
     color: inherit;
-    white-space: nowrap;
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 .mm-help-code code em {
     color: var(--mm-warning);

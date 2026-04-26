@@ -526,4 +526,114 @@ class ApiTest extends IntegrationTestCase
         $this->assertArrayHasKey('sites', $result);
         $this->assertContains('test.com', $result['sites']);
     }
+
+    // ─── Events API ─────────────────────────────────────────────────────
+
+    private function seedEvents(): void
+    {
+        $hashA = hash('sha256', 'evt_visitor_a');
+        $hashB = hash('sha256', 'evt_visitor_b');
+        $hashC = hash('sha256', 'evt_visitor_c');
+
+        // 3 saves (2 unique users), 2 exports (2 unique users), 1 open_project
+        $this->insertEvent(['visitor_hash' => $hashA, 'site' => 'test.com', 'name' => 'save', 'value' => 'manual', 'created_at' => $this->todayTs]);
+        $this->insertEvent(['visitor_hash' => $hashA, 'site' => 'test.com', 'name' => 'save', 'value' => 'shortcut', 'created_at' => $this->todayTs + 10]);
+        $this->insertEvent(['visitor_hash' => $hashB, 'site' => 'test.com', 'name' => 'save', 'value' => 'manual', 'created_at' => $this->todayTs + 20]);
+        $this->insertEvent(['visitor_hash' => $hashA, 'site' => 'test.com', 'name' => 'export', 'value' => 'stl-binary', 'created_at' => $this->todayTs + 30]);
+        $this->insertEvent(['visitor_hash' => $hashC, 'site' => 'test.com', 'name' => 'export', 'value' => 'stl-ascii', 'created_at' => $this->todayTs + 40]);
+        $this->insertEvent(['visitor_hash' => $hashA, 'site' => 'test.com', 'name' => 'open_project', 'created_at' => $this->todayTs + 50]);
+
+        // Different site — must not bleed into 'test.com' queries
+        $this->insertEvent(['visitor_hash' => $hashA, 'site' => 'other.com', 'name' => 'save', 'created_at' => $this->todayTs]);
+    }
+
+    public function testApiEventsReturnsTopEvents(): void
+    {
+        $this->seedEvents();
+        $fromTs = $this->yesterdayTs - 1;
+        $toTs = $this->todayTs + 86400;
+
+        $result = \MintyMetrics\api_events('test.com', $fromTs, $toTs, 50, 0);
+
+        $this->assertArrayHasKey('rows', $result);
+        $this->assertCount(3, $result['rows']);
+
+        // Sorted by count desc: save=3, export=2, open_project=1
+        $this->assertSame('save', $result['rows'][0]['name']);
+        $this->assertSame(3, $result['rows'][0]['count']);
+        $this->assertSame(2, $result['rows'][0]['uniques']);
+
+        $this->assertSame('export', $result['rows'][1]['name']);
+        $this->assertSame(2, $result['rows'][1]['count']);
+        $this->assertSame(2, $result['rows'][1]['uniques']);
+
+        $this->assertSame('open_project', $result['rows'][2]['name']);
+        $this->assertSame(1, $result['rows'][2]['count']);
+    }
+
+    public function testApiEventsScopedToSite(): void
+    {
+        $this->seedEvents();
+        $fromTs = $this->yesterdayTs - 1;
+        $toTs = $this->todayTs + 86400;
+
+        $other = \MintyMetrics\api_events('other.com', $fromTs, $toTs, 50, 0);
+
+        $this->assertCount(1, $other['rows']);
+        $this->assertSame('save', $other['rows'][0]['name']);
+        $this->assertSame(1, $other['rows'][0]['count']);
+    }
+
+    public function testApiEventsScopedToDateRange(): void
+    {
+        $this->seedEvents();
+        $oldTs = $this->todayTs - (5 * 86400);
+        $this->insertEvent(['site' => 'test.com', 'name' => 'old_event', 'created_at' => $oldTs]);
+
+        // Window: yesterday → today
+        $fromTs = $this->yesterdayTs - 1;
+        $toTs = $this->todayTs + 86400;
+        $result = \MintyMetrics\api_events('test.com', $fromTs, $toTs, 50, 0);
+
+        $names = array_column($result['rows'], 'name');
+        $this->assertNotContains('old_event', $names);
+    }
+
+    public function testApiEventValuesReturnsBreakdown(): void
+    {
+        $this->seedEvents();
+        $fromTs = $this->yesterdayTs - 1;
+        $toTs = $this->todayTs + 86400;
+
+        $result = \MintyMetrics\api_event_values('test.com', $fromTs, $toTs, 'save', 50, 0);
+
+        $this->assertArrayHasKey('rows', $result);
+        $this->assertSame('save', $result['name']);
+
+        $byValue = [];
+        foreach ($result['rows'] as $r) {
+            $byValue[$r['value']] = $r;
+        }
+        $this->assertSame(2, $byValue['manual']['count']);
+        $this->assertSame(2, $byValue['manual']['uniques']);
+        $this->assertSame(1, $byValue['shortcut']['count']);
+    }
+
+    public function testApiEventValuesGroupsNullsAsNoValue(): void
+    {
+        $this->seedEvents();
+        $fromTs = $this->yesterdayTs - 1;
+        $toTs = $this->todayTs + 86400;
+
+        $result = \MintyMetrics\api_event_values('test.com', $fromTs, $toTs, 'open_project', 50, 0);
+
+        $this->assertCount(1, $result['rows']);
+        $this->assertSame('(no value)', $result['rows'][0]['value']);
+    }
+
+    public function testApiEventValuesRejectsBadName(): void
+    {
+        $result = \MintyMetrics\api_event_values('test.com', 0, time(), 'bad name', 50, 0);
+        $this->assertArrayHasKey('error', $result);
+    }
 }

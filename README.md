@@ -26,13 +26,14 @@ Drop one file. Know your audience. No cookies, no config, no complexity.
 ## Features
 
 - Pageviews, unique visitors, bounce rate, average time-on-page
+- **Custom event tracking** — `mm('track', 'name', value, props)` JS API with name → value drilldown in the dashboard
 - Live visitor count
-- Top pages, referrers, UTM campaign tracking
+- Top pages, top events, referrers, UTM campaign tracking
 - Device type, browser, OS, screen resolution, language breakdown
 - Country-level geolocation (optional, via free IP2Location LITE database)
 - Interactive world map
 - Date range picker (today, 7d, 30d, 90d, custom)
-- CSV export
+- CSV export (pageviews, events, and aggregates)
 - Bot filtering (User-Agent patterns + JS verification)
 - DNT / Global Privacy Control support
 - Automatic data retention and daily summarization
@@ -74,6 +75,52 @@ Track multiple sites from one central dashboard.
    <script defer src="https://stats.yourdomain.com/analytics.php?js&site=myproject.com"></script>
    ```
 4. All sites appear in one dashboard with a site switcher
+
+### Custom Events
+
+Once pageview tracking is wired up (drop-in or hub mode), record any user action and see it in the **Top Events** card on the dashboard.
+
+Add this stub once on each tracked page, **before** the tracker script. It queues calls until the tracker loads:
+
+```html
+<script>window.mm=window.mm||function(){(window.mm.q=window.mm.q||[]).push(arguments)};</script>
+```
+
+Then call `mm('track', name, value?, props?)` from anywhere in your JavaScript:
+
+```js
+mm('track', 'signup');                            // name only
+mm('track', 'signup', 'pro');                     // + value
+mm('track', 'export', 'stl', { scope: 'scene' }); // + props (object)
+```
+
+**Validation rules:**
+
+| Field | Allowed | Limit |
+|---|---|---|
+| `name` | `a-z`, `A-Z`, `0-9`, `_` | 1–64 chars, required |
+| `value` | any string | 256 chars, optional |
+| `props` | JSON object | 1 KB encoded, optional |
+
+The same DNT/GPC, bot, and rate-limit gates that protect `?hit` apply to events. Events use a **separate** rate-limit bucket (`evt:` prefix), so a quick burst of events does not throttle pageview tracking.
+
+#### From a server / curl / non-browser caller
+
+For server-side or non-browser callers, call the endpoint directly. `_v=1` is required (the JS-verify gate).
+
+```bash
+curl -A "Mozilla/5.0 (Linux x86_64)" \
+  "https://stats.example.com/analytics.php?event&site=myproject.com&name=signup&value=pro&_v=1"
+```
+
+> **Important:** the bot User-Agent regex blocks the literal substring `curl`, `wget`, `python-requests`, `go-http-client`, `java/`, and similar. Always pass an explicit `User-Agent` header (e.g., `MyApp/1.0`) when firing events from a server, CI job, or HTTP client. Without one, the request is silently dropped at the bot filter.
+
+For structured props, URL-encode the JSON and pass as `&p=...`:
+
+```bash
+curl -A "MyApp/1.0" \
+  "https://stats.example.com/analytics.php?event&site=myproject.com&name=export&value=stl&p=%7B%22scope%22%3A%22scene%22%7D&_v=1"
+```
 
 ## Requirements
 

@@ -53,7 +53,7 @@ function db_init_with(\SQLite3 $db): void {
         // Table doesn't exist yet, will be created below
     }
 
-    if ($schemaVersion >= 2) {
+    if ($schemaVersion >= 3) {
         return; // Schema is up to date
     }
 
@@ -154,8 +154,29 @@ function db_init_with(\SQLite3 $db): void {
         )
     ");
 
+    // Custom events (pruned with same retention as hits)
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS events (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            site         TEXT NOT NULL DEFAULT '',
+            visitor_hash TEXT NOT NULL,
+            name         TEXT NOT NULL,
+            value        TEXT DEFAULT NULL,
+            props        TEXT DEFAULT NULL,
+            page_path    TEXT DEFAULT NULL,
+            country_code TEXT DEFAULT NULL,
+            device_type  TEXT DEFAULT NULL,
+            browser      TEXT DEFAULT NULL,
+            os           TEXT DEFAULT NULL,
+            created_at   INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        )
+    ");
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_events_site_created ON events(site, created_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_events_site_name ON events(site, name, created_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_events_visitor ON events(visitor_hash, created_at)');
+
     // Set schema version
-    $db->exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '2')");
+    $db->exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '3')");
 
     $db->exec('COMMIT');
     } catch (\Exception $e) {
@@ -170,9 +191,41 @@ function db_init_with(\SQLite3 $db): void {
             $db->exec('ALTER TABLE hits ADD COLUMN last_active_at INTEGER DEFAULT NULL');
             $db->exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '2')");
             $db->exec('COMMIT');
+            $schemaVersion = 2;
         } catch (\Exception $e) {
             @$db->exec('ROLLBACK');
             log_error('migration v1→v2: ' . $e->getMessage());
+        }
+    }
+
+    // Migration: v2 → v3 (create events table)
+    if ($schemaVersion === 2) {
+        try {
+            $db->exec('BEGIN');
+            $db->exec("
+                CREATE TABLE IF NOT EXISTS events (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    site         TEXT NOT NULL DEFAULT '',
+                    visitor_hash TEXT NOT NULL,
+                    name         TEXT NOT NULL,
+                    value        TEXT DEFAULT NULL,
+                    props        TEXT DEFAULT NULL,
+                    page_path    TEXT DEFAULT NULL,
+                    country_code TEXT DEFAULT NULL,
+                    device_type  TEXT DEFAULT NULL,
+                    browser      TEXT DEFAULT NULL,
+                    os           TEXT DEFAULT NULL,
+                    created_at   INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+                )
+            ");
+            $db->exec('CREATE INDEX IF NOT EXISTS idx_events_site_created ON events(site, created_at)');
+            $db->exec('CREATE INDEX IF NOT EXISTS idx_events_site_name ON events(site, name, created_at)');
+            $db->exec('CREATE INDEX IF NOT EXISTS idx_events_visitor ON events(visitor_hash, created_at)');
+            $db->exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '3')");
+            $db->exec('COMMIT');
+        } catch (\Exception $e) {
+            @$db->exec('ROLLBACK');
+            log_error('migration v2→v3: ' . $e->getMessage());
         }
     }
 }

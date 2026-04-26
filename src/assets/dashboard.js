@@ -86,6 +86,23 @@ var MM = {
             });
         });
 
+        // Events drilldown — clicking an event name loads its values
+        var eventsTable = document.getElementById('tableEvents');
+        if (eventsTable) {
+            eventsTable.addEventListener('click', function(e) {
+                var link = e.target.closest('.mm-event-link');
+                if (!link) return;
+                e.preventDefault();
+                var row = link.closest('tr');
+                var name = row && row.dataset.eventName;
+                if (name) self.loadEventValues(name);
+            });
+        }
+        var eventsBack = document.getElementById('eventsBack');
+        if (eventsBack) {
+            eventsBack.addEventListener('click', function() { self.loadEvents(); });
+        }
+
         // Modal links
         document.querySelectorAll('[data-modal]').forEach(function(link) {
             link.addEventListener('click', function(e) {
@@ -183,6 +200,28 @@ var MM = {
         this.fetch('countries').then(function(d) { self.renderCountries(d); });
         this.fetch('screens').then(function(d) { self.renderScreens(d); });
         this.fetch('languages').then(function(d) { self.renderLanguages(d); });
+        this.loadEvents();
+    },
+
+    loadEvents: function() {
+        var self = this;
+        this._eventDrilldown = null;
+        this._toggleEventsBack(false);
+        this.fetch('events').then(function(d) { self.renderEvents(d); });
+    },
+
+    loadEventValues: function(name) {
+        var self = this;
+        this._eventDrilldown = name;
+        this._toggleEventsBack(true);
+        this.fetch('event_values', { name: name }).then(function(d) { self.renderEventValues(d); });
+    },
+
+    _toggleEventsBack: function(show) {
+        var heading = document.getElementById('eventsHeading');
+        var back = document.getElementById('eventsBack');
+        if (heading) heading.textContent = show ? 'Event: ' + this._eventDrilldown : 'Top Events';
+        if (back) back.hidden = !show;
     },
 
     loadSites: function() {
@@ -476,6 +515,47 @@ var MM = {
             {key: 'lang', label: 'Language'},
             {key: 'visitors', label: 'Visitors', align: 'right'}
         ], 'No language data');
+    },
+
+    renderEvents: function(data) {
+        var table = document.getElementById('tableEvents');
+        if (!table) return;
+        table.querySelector('thead').innerHTML = '<tr><th>Event</th><th>Count</th><th>Users</th></tr>';
+        var tbody = table.querySelector('tbody');
+        var rows = (data && data.rows) || [];
+        if (!rows.length) {
+            tbody.innerHTML = '<tr><td colspan="3">' + this.emptyState('No events tracked yet — call mm(\'track\', \'name\') from your site') + '</td></tr>';
+            return;
+        }
+        var html = '';
+        rows.forEach(function(r) {
+            var name = MM.escapeHtml(String(r.name));
+            html += '<tr class="mm-row-clickable" data-event-name="' + name + '">'
+                  + '<td><a href="#" class="mm-event-link">' + name + '</a></td>'
+                  + '<td>' + MM.formatNumber(r.count) + '</td>'
+                  + '<td>' + MM.formatNumber(r.uniques) + '</td>'
+                  + '</tr>';
+        });
+        tbody.innerHTML = html;
+    },
+
+    renderEventValues: function(data) {
+        var table = document.getElementById('tableEvents');
+        if (!table) return;
+        table.querySelector('thead').innerHTML = '<tr><th>Value</th><th>Count</th><th>Users</th></tr>';
+        var tbody = table.querySelector('tbody');
+        var rows = (data && data.rows) || [];
+        if (!rows.length) {
+            tbody.innerHTML = '<tr><td colspan="3">' + this.emptyState('No values for this event') + '</td></tr>';
+            return;
+        }
+        var html = '';
+        rows.forEach(function(r) {
+            html += '<tr><td>' + MM.escapeHtml(String(r.value)) + '</td>'
+                  + '<td>' + MM.formatNumber(r.count) + '</td>'
+                  + '<td>' + MM.formatNumber(r.uniques) + '</td></tr>';
+        });
+        tbody.innerHTML = html;
     },
 
     renderTable: function(tableId, rows, columns, emptyMsg) {

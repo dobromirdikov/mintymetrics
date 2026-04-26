@@ -133,7 +133,7 @@ if ($syntaxReturn !== 0) {
 echo "Syntax check passed.\n";
 
 // Verify key function definitions exist
-$expectedFunctions = ['db', 'track_hit', 'auth_check', 'render_dashboard', 'export_csv'];
+$expectedFunctions = ['db', 'track_hit', 'track_event', 'auth_check', 'render_dashboard', 'export_csv'];
 $missingFunctions = [];
 foreach ($expectedFunctions as $fn) {
     if (strpos($output, "function {$fn}(") === false) {
