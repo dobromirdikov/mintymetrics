@@ -369,13 +369,10 @@ function set_cors_headers(): void {
         \header('Access-Control-Allow-Origin: *');
     } elseif ($origin) {
         // Check origin against allowed domains
-        $originHost = \parse_url($origin, PHP_URL_HOST) ?? '';
-        foreach ($allowed as $domain) {
-            if ($originHost === $domain || \str_ends_with($originHost, '.' . $domain)) {
-                \header('Access-Control-Allow-Origin: ' . $origin);
-                \header('Vary: Origin');
-                break;
-            }
+        $originHost = normalize_domain($origin);
+        if (domain_matches_allowed($originHost, $allowed)) {
+            \header('Access-Control-Allow-Origin: ' . $origin);
+            \header('Vary: Origin');
         }
         // If no match found, no CORS header is sent — browser blocks the request
     }
@@ -452,21 +449,14 @@ function validate_domain(string $site): bool {
         return true; // No whitelist = allow all (single-site mode)
     }
 
-    foreach ($allowed as $domain) {
-        if ($site === $domain || \str_ends_with($site, '.' . $domain)) {
-            return true;
-        }
-    }
-    return false;
+    return domain_matches_allowed($site, $allowed);
 }
 
 /**
  * Sanitize a site domain string.
  */
 function sanitize_site(string $site): string {
-    $site = \strtolower(\trim($site));
-    $site = \preg_replace('/[^a-z0-9.\-]/', '', $site);
-    return truncate($site, MAX_SITE_DOMAIN);
+    return normalize_domain($site);
 }
 
 /**

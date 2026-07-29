@@ -238,6 +238,83 @@ function setup_complete(): bool {
 }
 
 /**
+ * Normalize a hostname or origin to a lowercase host without its port.
+ */
+function normalize_domain(string $value): string {
+    $value = \trim($value);
+    if ($value === '') {
+        return '';
+    }
+
+    $bareIpv6 = \trim($value, '[]');
+    if (\filter_var($bareIpv6, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
+        return \strtolower($bareIpv6);
+    }
+
+    $candidate = \str_contains($value, '://') ? $value : 'http://' . $value;
+    $host = \parse_url($candidate, PHP_URL_HOST);
+    if (!\is_string($host) || $host === '') {
+        return '';
+    }
+
+    // parse_url() retains brackets around IPv6 hosts.
+    $host = \trim(\strtolower($host), '[]');
+    $host = \preg_replace('/[^a-z0-9.\-:]/', '', $host);
+    return truncate($host, MAX_SITE_DOMAIN);
+}
+
+/**
+ * Normalize and de-duplicate a list of configured domains.
+ */
+function normalize_domains(array $domains): array {
+    $normalized = [];
+    foreach ($domains as $domain) {
+        $host = normalize_domain((string) $domain);
+        if ($host !== '') {
+            $normalized[$host] = true;
+        }
+    }
+    return \array_keys($normalized);
+}
+
+/**
+ * Check a hostname against an allow-list, including permitted subdomains.
+ */
+function domain_matches_allowed(string $site, array $allowed): bool {
+    $site = normalize_domain($site);
+    if ($site === '') {
+        return false;
+    }
+
+    foreach (normalize_domains($allowed) as $domain) {
+        if ($site === $domain || \str_ends_with($site, '.' . $domain)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Validate a request authority while retaining its explicit port.
+ */
+function resolve_request_authority(string $authority, array $allowed, string $fallback): string {
+    $authority = \preg_replace('/[^a-zA-Z0-9.\-:\[\]]/', '', $authority);
+    $host = normalize_domain($authority);
+
+    if ($host !== '' && (empty($allowed) || domain_matches_allowed($host, $allowed))) {
+        return $authority;
+    }
+
+    $fallback = \preg_replace('/[^a-zA-Z0-9.\-:\[\]]/', '', $fallback);
+    if (normalize_domain($fallback) !== '') {
+        return $fallback;
+    }
+
+    $normalizedAllowed = normalize_domains($allowed);
+    return $normalizedAllowed[0] ?? 'localhost';
+}
+
+/**
  * Get allowed domains list.
  * Returns empty array if the database hasn't been created yet.
  */
@@ -247,7 +324,7 @@ function get_allowed_domains(): array {
     }
     $json = get_config('allowed_domains', '[]');
     $domains = \json_decode($json, true);
-    return \is_array($domains) ? $domains : [];
+    return \is_array($domains) ? normalize_domains($domains) : [];
 }
 
 /**

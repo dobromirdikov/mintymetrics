@@ -30,9 +30,9 @@ function handle_setup(): void {
     auth_set_password($password);
 
     // Save allowed domains
-    $domainList = \array_filter(\array_map('trim', \explode("\n", $domains)));
+    $domainList = normalize_domains(\array_map('trim', \explode("\n", $domains)));
     if (empty($domainList)) {
-        $domainList = [$_SERVER['HTTP_HOST'] ?? 'localhost'];
+        $domainList = [normalize_domain($_SERVER['HTTP_HOST'] ?? 'localhost') ?: 'localhost'];
     }
     set_config('allowed_domains', \json_encode(\array_values($domainList)));
 
@@ -55,7 +55,7 @@ function render_setup(array $errors = [], string $domains = ''): void {
     set_csp_headers();
 
     if (empty($domains)) {
-        $domains = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        $domains = normalize_domain($_SERVER['HTTP_HOST'] ?? 'localhost') ?: 'localhost';
     }
 
     $errorsHtml = '';

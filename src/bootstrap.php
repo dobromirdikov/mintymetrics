@@ -228,28 +228,9 @@ render_dashboard();
  */
 function script_url(): string {
     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-
-    // Sanitize host header: strip anything that isn't a valid hostname character.
-    // This prevents host header injection even when allowed_domains is empty.
-    $host = \preg_replace('/[^a-zA-Z0-9.\-:\[\]]/', '', $host);
-
-    // Validate host against allowed domains to prevent host header injection.
-    // Falls back to SERVER_NAME (set by server config, not client-controlled).
     $allowed = get_allowed_domains();
-    if (!empty($allowed)) {
-        $hostOnly = \strtolower(\explode(':', $host)[0]); // strip port
-        $valid = false;
-        foreach ($allowed as $domain) {
-            if ($hostOnly === $domain || \str_ends_with($hostOnly, '.' . $domain)) {
-                $valid = true;
-                break;
-            }
-        }
-        if (!$valid) {
-            $host = $_SERVER['SERVER_NAME'] ?? $allowed[0];
-        }
-    }
+    $fallback = $_SERVER['SERVER_NAME'] ?? ($allowed[0] ?? 'localhost');
+    $host = resolve_request_authority($_SERVER['HTTP_HOST'] ?? 'localhost', $allowed, $fallback);
 
     // In drop-in mode, __FILE__ is the analytics script while SCRIPT_NAME
     // points to the including page. Derive the URL path from DOCUMENT_ROOT.

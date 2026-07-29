@@ -7,6 +7,61 @@ use PHPUnit\Framework\Attributes\DataProvider;
 
 class ConfigHelpersTest extends TestCase
 {
+    #[DataProvider('domainNormalizationProvider')]
+    public function testNormalizeDomain(string $input, string $expected): void
+    {
+        $this->assertSame($expected, \MintyMetrics\normalize_domain($input));
+    }
+
+    public static function domainNormalizationProvider(): array
+    {
+        return [
+            'Hostname' => ['example.com', 'example.com'],
+            'Uppercase hostname and port' => ['Example.COM:8443', 'example.com'],
+            'Localhost and MAMP port' => ['localhost:8888', 'localhost'],
+            'Full origin URL' => ['https://Blog.Example.com:9443/path', 'blog.example.com'],
+            'Bracketed IPv6 and port' => ['[::1]:8888', '::1'],
+            'Bare IPv6' => ['::1', '::1'],
+            'Bare public IPv6' => ['2001:db8::1', '2001:db8::1'],
+            'Whitespace' => ['  localhost:8888  ', 'localhost'],
+            'Empty value' => ['', ''],
+        ];
+    }
+
+    public function testDomainMatchesLegacyPortBearingAllowlistEntry(): void
+    {
+        $this->assertTrue(\MintyMetrics\domain_matches_allowed('localhost', ['localhost:8888']));
+    }
+
+    public function testDomainMatchingAllowsSubdomainsButNotSuffixLookalikes(): void
+    {
+        $this->assertTrue(\MintyMetrics\domain_matches_allowed('stats.example.com', ['example.com']));
+        $this->assertFalse(\MintyMetrics\domain_matches_allowed('notexample.com', ['example.com']));
+        $this->assertFalse(\MintyMetrics\domain_matches_allowed('2001:db8::1', ['2001:db8::2']));
+    }
+
+    public function testResolveRequestAuthorityPreservesPortAfterHostnameValidation(): void
+    {
+        $authority = \MintyMetrics\resolve_request_authority(
+            'localhost:8888',
+            ['localhost:8888'],
+            'localhost'
+        );
+
+        $this->assertSame('localhost:8888', $authority);
+    }
+
+    public function testResolveRequestAuthorityFallsBackForDisallowedHost(): void
+    {
+        $authority = \MintyMetrics\resolve_request_authority(
+            "attacker.example:8888\r\nX-Injected: yes",
+            ['example.com'],
+            'example.com'
+        );
+
+        $this->assertSame('example.com', $authority);
+    }
+
     // ─── IP Normalization ───────────────────────────────────────────────
 
     #[DataProvider('ipNormalizationProvider')]

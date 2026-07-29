@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-07-29
+
+### Fixed
+- Local development URLs now retain non-default ports such as MAMP's `localhost:8888`
+- Allowed domains, tracked sites, and CORS origins now share consistent hostname normalization
+- Existing allow-list entries that include a port continue working without manual changes
+
 ## [1.1.0] - 2026-04-26
 
 ### Added

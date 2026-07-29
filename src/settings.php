@@ -254,7 +254,7 @@ function handle_settings(): void {
         }
         set_config('dashboard_title', truncate($title, 50));
 
-        $domains = \array_filter(\array_map('trim', \explode("\n", $_POST['domains'] ?? '')));
+        $domains = normalize_domains(\array_map('trim', \explode("\n", $_POST['domains'] ?? '')));
         set_config('allowed_domains', \json_encode(\array_values($domains)));
 
         set_config('respect_dnt', isset($_POST['respect_dnt']) ? '1' : '0');
