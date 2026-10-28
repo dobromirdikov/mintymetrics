@@ -162,4 +162,50 @@ class ConfigHelpersTest extends TestCase
     {
         $this->assertSame('Hello World', \MintyMetrics\e('Hello World'));
     }
+
+    public function testDayHelpersAcrossDst(): void
+    {
+        $prev = date_default_timezone_get();
+        date_default_timezone_set('Europe/Sofia');
+        try {
+            // 2026-03-29 is the spring-forward day in Europe (23 hours long)
+            $start = \MintyMetrics\day_start('2026-03-29');
+            $end = \MintyMetrics\day_start(\MintyMetrics\next_date('2026-03-29'));
+            $this->assertSame('2026-03-30', \MintyMetrics\next_date('2026-03-29'));
+            $this->assertSame(23 * 3600, $end - $start);
+            $this->assertSame('2026-03-29 00:00:00', date('Y-m-d H:i:s', $start));
+        } finally {
+            date_default_timezone_set($prev);
+        }
+    }
+
+    public function testRetentionCutoffIsLocalMidnight(): void
+    {
+        $prev = date_default_timezone_get();
+        date_default_timezone_set('America/New_York');
+        try {
+            $cutoff = \MintyMetrics\retention_cutoff_ts(90);
+            $this->assertSame('00:00:00', date('H:i:s', $cutoff));
+            $this->assertSame(date('Y-m-d', strtotime('today -90 days')), date('Y-m-d', $cutoff));
+        } finally {
+            date_default_timezone_set($prev);
+        }
+    }
+
+    public function testDateAndTimezoneValidation(): void
+    {
+        $this->assertTrue(\MintyMetrics\is_valid_date('2026-02-28'));
+        $this->assertFalse(\MintyMetrics\is_valid_date('2026-02-30'));
+        $this->assertFalse(\MintyMetrics\is_valid_date('2026-99-99'));
+        $this->assertFalse(\MintyMetrics\is_valid_date('26-1-1'));
+        $this->assertTrue(\MintyMetrics\is_valid_timezone('Europe/Sofia'));
+        $this->assertFalse(\MintyMetrics\is_valid_timezone('Mars/Base'));
+        $this->assertFalse(\MintyMetrics\is_valid_timezone(''));
+    }
+
+    public function testScalarInputReplacesArrays(): void
+    {
+        $input = ['page' => ['x'], 'site' => 'a.com', 'n' => ['a' => ['b']]];
+        $this->assertSame(['page' => '', 'site' => 'a.com', 'n' => ''], \MintyMetrics\scalar_input($input));
+    }
 }

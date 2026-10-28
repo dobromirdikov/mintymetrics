@@ -99,7 +99,7 @@ function track_hit(): void {
 
         $stmt->execute();
 
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
         // Silently fail — tracking errors must never break anything
         log_error('track_hit: ' . $e->getMessage());
     }
@@ -167,7 +167,7 @@ function track_beacon(): void {
         $stmt->bindValue(':today_start', $todayStart, SQLITE3_INTEGER);
         $stmt->execute();
 
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
         log_error('track_beacon: ' . $e->getMessage());
     }
 
@@ -257,7 +257,7 @@ function track_event(): void {
 
         $stmt->execute();
 
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
         log_error('track_event: ' . $e->getMessage());
     }
 }
@@ -428,7 +428,7 @@ function check_rate_limit(string $ipHash, string $bucket = ''): bool {
         }
 
         return false;
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
         return false; // On error, allow the request
     }
 }

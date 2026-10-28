@@ -1,6 +1,8 @@
 <?php
 namespace MintyMetrics;
 
+const SCHEMA_VERSION = 4;
+
 /**
  * Get the singleton SQLite3 database connection.
  */
@@ -17,19 +19,60 @@ function db(): \SQLite3 {
         return $instance;
     }
 
-    $path = get_db_path();
-    $instance = new \SQLite3($path);
+    // Anything that calls db() while the connection is still being opened or migrated
+    // (e.g. log_error from a failing migration) must not reopen and re-migrate recursively.
+    static $opening = false;
+    if ($opening) {
+        throw new \RuntimeException('Database is still initializing');
+    }
+    $opening = true;
+    try {
+        $path = get_db_path();
+        \clearstatcache(true, $path);
+        $isNew = !\file_exists($path) || \filesize($path) === 0;
+        $db = new \SQLite3($path);
+        db_configure($db, $isNew);
+        db_init_with($db);
+    } finally {
+        $opening = false;
+    }
 
-    // Performance and reliability settings
-    $instance->exec('PRAGMA journal_mode = WAL');
-    $instance->exec('PRAGMA busy_timeout = 5000');
-    $instance->exec('PRAGMA foreign_keys = ON');
-    $instance->exec('PRAGMA synchronous = NORMAL');
-    $instance->exec('PRAGMA auto_vacuum = INCREMENTAL');
-
-    db_init_with($instance);
-
+    $instance = $db;
     return $instance;
+}
+
+/**
+ * Apply connection settings. Shared by db() and the test harness.
+ *
+ * Order matters: the busy timeout must be in place before anything that needs
+ * a lock (including switching to WAL), and auto_vacuum only takes effect if it
+ * is set before the first table is created and before WAL writes the header.
+ */
+function db_configure(\SQLite3 $db, bool $isNew = false): void {
+    $db->enableExceptions(true);
+    $db->busyTimeout(5000);
+
+    if ($isNew) {
+        $db->exec('PRAGMA auto_vacuum = INCREMENTAL');
+    }
+
+    // journal_mode is persistent; only switch when needed to avoid taking a lock per request
+    if (\strtolower((string) $db->querySingle('PRAGMA journal_mode')) !== 'wal') {
+        $db->exec('PRAGMA journal_mode = WAL');
+    }
+    $db->exec('PRAGMA foreign_keys = ON');
+    $db->exec('PRAGMA synchronous = NORMAL');
+}
+
+/**
+ * Roll back the current transaction, ignoring "no transaction is active" errors.
+ */
+function db_rollback(\SQLite3 $db): void {
+    try {
+        $db->exec('ROLLBACK');
+    } catch (\Throwable $e) {
+        // Nothing to roll back
+    }
 }
 
 /**
@@ -40,25 +83,66 @@ function db_init(): void {
 }
 
 /**
- * Create all tables on the given database connection.
+ * Create all tables on the given database connection, or migrate an older schema.
  */
 function db_init_with(\SQLite3 $db): void {
-    $schemaVersion = 0;
-    try {
-        $result = @$db->querySingle("SELECT value FROM settings WHERE key = 'schema_version'");
-        if ($result !== null && $result !== false) {
-            $schemaVersion = (int) $result;
-        }
-    } catch (\Exception $e) {
-        // Table doesn't exist yet, will be created below
-    }
+    $schemaVersion = db_schema_version($db);
 
-    if ($schemaVersion >= 3) {
+    if ($schemaVersion >= SCHEMA_VERSION) {
         return; // Schema is up to date
     }
 
+    if ($schemaVersion === 0) {
+        db_create_schema($db);
+        return;
+    }
+
+    // Each migration runs in its own transaction and bumps the version only on success,
+    // so a failed step is retried on the next request instead of being skipped.
+    $migrations = [
+        1 => 'db_migrate_v2',
+        2 => 'db_migrate_v3',
+        3 => 'db_migrate_v4',
+    ];
+    foreach ($migrations as $fromVersion => $migration) {
+        if ($schemaVersion !== $fromVersion) {
+            continue;
+        }
+        try {
+            $db->exec('BEGIN IMMEDIATE');
+            // Re-check inside the write lock: a concurrent request may have migrated already
+            if (db_schema_version($db) === $fromVersion) {
+                (__NAMESPACE__ . '\\' . $migration)($db);
+                $db->exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '" . ($fromVersion + 1) . "')");
+            }
+            $db->exec('COMMIT');
+        } catch (\Throwable $e) {
+            db_rollback($db);
+            // Not log_error(): that needs db(), which is what is failing to initialize
+            \error_log("MintyMetrics migration v{$fromVersion} to v" . ($fromVersion + 1) . ' failed: ' . $e->getMessage());
+            throw $e;
+        }
+        $schemaVersion = db_schema_version($db);
+    }
+}
+
+/**
+ * Read the stored schema version (0 when the settings table does not exist yet).
+ */
+function db_schema_version(\SQLite3 $db): int {
+    if (!$db->querySingle("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'")) {
+        return 0; // Fresh database
+    }
+    $result = $db->querySingle("SELECT value FROM settings WHERE key = 'schema_version'");
+    return ($result !== null && $result !== false) ? (int) $result : 0;
+}
+
+/**
+ * Create the full, current schema on an empty database.
+ */
+function db_create_schema(\SQLite3 $db): void {
     try {
-    $db->exec('BEGIN');
+    $db->exec('BEGIN IMMEDIATE');
 
     // Raw hit data (pruned after DATA_RETENTION_DAYS)
     $db->exec("
@@ -92,7 +176,8 @@ function db_init_with(\SQLite3 $db): void {
     $db->exec('CREATE INDEX IF NOT EXISTS idx_hits_page ON hits(site, page_path, created_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_hits_created ON hits(created_at)');
 
-    // Daily summaries (kept indefinitely)
+    // Daily summaries (kept indefinitely). Dates are local days in the configured timezone.
+    // visitor_days/bounced/time_sum/time_count let ratios be weighted correctly across a range.
     $db->exec("
         CREATE TABLE IF NOT EXISTS daily_summaries (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,6 +196,10 @@ function db_init_with(\SQLite3 $db): void {
             utm_summary      TEXT DEFAULT NULL,
             screens          TEXT DEFAULT NULL,
             languages        TEXT DEFAULT NULL,
+            visitor_days     INTEGER NOT NULL DEFAULT 0,
+            bounced          INTEGER NOT NULL DEFAULT 0,
+            time_sum         REAL NOT NULL DEFAULT 0,
+            time_count       INTEGER NOT NULL DEFAULT 0,
             UNIQUE(date, site)
         )
     ");
@@ -155,6 +244,21 @@ function db_init_with(\SQLite3 $db): void {
     ");
 
     // Custom events (pruned with same retention as hits)
+    db_create_events_table($db);
+
+    $db->exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '" . SCHEMA_VERSION . "')");
+
+    $db->exec('COMMIT');
+    } catch (\Throwable $e) {
+        db_rollback($db);
+        throw $e;
+    }
+}
+
+/**
+ * Create the events table and its indexes.
+ */
+function db_create_events_table(\SQLite3 $db): void {
     $db->exec("
         CREATE TABLE IF NOT EXISTS events (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,69 +278,71 @@ function db_init_with(\SQLite3 $db): void {
     $db->exec('CREATE INDEX IF NOT EXISTS idx_events_site_created ON events(site, created_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_events_site_name ON events(site, name, created_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_events_visitor ON events(visitor_hash, created_at)');
-
-    // Set schema version
-    $db->exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '3')");
-
-    $db->exec('COMMIT');
-    } catch (\Exception $e) {
-        @$db->exec('ROLLBACK');
-        throw $e;
-    }
-
-    // Migration: v1 → v2 (add last_active_at column)
-    if ($schemaVersion === 1) {
-        try {
-            $db->exec('BEGIN');
-            $db->exec('ALTER TABLE hits ADD COLUMN last_active_at INTEGER DEFAULT NULL');
-            $db->exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '2')");
-            $db->exec('COMMIT');
-            $schemaVersion = 2;
-        } catch (\Exception $e) {
-            @$db->exec('ROLLBACK');
-            log_error('migration v1→v2: ' . $e->getMessage());
-        }
-    }
-
-    // Migration: v2 → v3 (create events table)
-    if ($schemaVersion === 2) {
-        try {
-            $db->exec('BEGIN');
-            $db->exec("
-                CREATE TABLE IF NOT EXISTS events (
-                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                    site         TEXT NOT NULL DEFAULT '',
-                    visitor_hash TEXT NOT NULL,
-                    name         TEXT NOT NULL,
-                    value        TEXT DEFAULT NULL,
-                    props        TEXT DEFAULT NULL,
-                    page_path    TEXT DEFAULT NULL,
-                    country_code TEXT DEFAULT NULL,
-                    device_type  TEXT DEFAULT NULL,
-                    browser      TEXT DEFAULT NULL,
-                    os           TEXT DEFAULT NULL,
-                    created_at   INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-                )
-            ");
-            $db->exec('CREATE INDEX IF NOT EXISTS idx_events_site_created ON events(site, created_at)');
-            $db->exec('CREATE INDEX IF NOT EXISTS idx_events_site_name ON events(site, name, created_at)');
-            $db->exec('CREATE INDEX IF NOT EXISTS idx_events_visitor ON events(visitor_hash, created_at)');
-            $db->exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '3')");
-            $db->exec('COMMIT');
-        } catch (\Exception $e) {
-            @$db->exec('ROLLBACK');
-            log_error('migration v2→v3: ' . $e->getMessage());
-        }
-    }
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)');
 }
 
 /**
- * Get the database file size in MB.
+ * List the column names of a table.
+ */
+function db_table_columns(\SQLite3 $db, string $table): array {
+    $columns = [];
+    $result = $db->query('PRAGMA table_info(' . $table . ')');
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $columns[] = $row['name'];
+    }
+    return $columns;
+}
+
+/** Migration v1 → v2: beacon activity column. */
+function db_migrate_v2(\SQLite3 $db): void {
+    if (!\in_array('last_active_at', db_table_columns($db, 'hits'), true)) {
+        $db->exec('ALTER TABLE hits ADD COLUMN last_active_at INTEGER DEFAULT NULL');
+    }
+}
+
+/** Migration v2 → v3: custom events. */
+function db_migrate_v3(\SQLite3 $db): void {
+    db_create_events_table($db);
+}
+
+/**
+ * Migration v3 → v4: additive counters on daily summaries so bounce rate and average
+ * time can be weighted correctly across ranges. Older rows only stored ratios, so their
+ * counters are reconstructed approximately (time is weighted by pageviews).
+ */
+function db_migrate_v4(\SQLite3 $db): void {
+    $existing = db_table_columns($db, 'daily_summaries');
+    $columns = [
+        'visitor_days' => 'INTEGER NOT NULL DEFAULT 0',
+        'bounced'      => 'INTEGER NOT NULL DEFAULT 0',
+        'time_sum'     => 'REAL NOT NULL DEFAULT 0',
+        'time_count'   => 'INTEGER NOT NULL DEFAULT 0',
+    ];
+    foreach ($columns as $name => $definition) {
+        if (!\in_array($name, $existing, true)) {
+            $db->exec("ALTER TABLE daily_summaries ADD COLUMN {$name} {$definition}");
+        }
+    }
+    $db->exec("
+        UPDATE daily_summaries SET
+            visitor_days = unique_visitors,
+            bounced      = CAST(ROUND(COALESCE(bounce_rate, 0) * unique_visitors) AS INTEGER),
+            time_sum     = CASE WHEN avg_time_on_page IS NULL THEN 0 ELSE avg_time_on_page * pageviews END,
+            time_count   = CASE WHEN avg_time_on_page IS NULL THEN 0 ELSE pageviews END
+    ");
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)');
+}
+
+/**
+ * Get the size of the live data in MB (excludes free pages awaiting reuse).
  */
 function db_size_mb(): float {
-    $path = get_db_path();
-    if (!\file_exists($path)) {
-        return 0.0;
+    try {
+        $db = db();
+        $pages = (int) $db->querySingle('PRAGMA page_count') - (int) $db->querySingle('PRAGMA freelist_count');
+        return \round(\max(0, $pages) * (int) $db->querySingle('PRAGMA page_size') / 1048576, 2);
+    } catch (\Throwable $e) {
+        $path = get_db_path();
+        return \file_exists($path) ? \round(\filesize($path) / 1048576, 2) : 0.0;
     }
-    return \round(\filesize($path) / 1048576, 2);
 }

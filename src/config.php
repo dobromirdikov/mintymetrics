@@ -64,7 +64,7 @@ function get_config(string $key, mixed $default = null): mixed {
         $result = $stmt->execute();
         $row = $result->fetchArray(SQLITE3_ASSOC);
         $cache[$key] = $row ? $row['value'] : $default;
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
         $cache[$key] = $default;
     }
 
@@ -147,6 +147,7 @@ function get_salt(): string {
     if ($salt !== null) {
         return $salt;
     }
+    $began = false;
 
     $today = \date('Y-m-d');
 
@@ -175,6 +176,7 @@ function get_salt(): string {
         $salt = \bin2hex(\random_bytes(32));
 
         $db->exec('BEGIN IMMEDIATE');
+        $began = true;
 
         // Re-check inside the write lock — another request may have rotated already
         $stmt = $db->prepare('SELECT value FROM settings WHERE key = :key');
@@ -183,6 +185,7 @@ function get_salt(): string {
         if ($row && $row['value'] === $today) {
             // Another request already rotated — use its salt
             $db->exec('ROLLBACK');
+            $began = false;
             $stmt = $db->prepare('SELECT value FROM settings WHERE key = :key');
             $stmt->bindValue(':key', 'daily_salt', SQLITE3_TEXT);
             $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
@@ -200,7 +203,13 @@ function get_salt(): string {
         $stmt->bindValue(':value', $today, SQLITE3_TEXT);
         $stmt->execute();
         $db->exec('COMMIT');
-    } catch (\Exception $e) {
+        $began = false;
+    } catch (\Throwable $e) {
+        // Never leave the rotation transaction open: later tracking writes would
+        // silently join it and be lost when the connection closes.
+        if ($began) {
+            db_rollback($db);
+        }
         // Fallback: generate ephemeral salt (won't persist but won't crash)
         if ($salt === null) {
             $salt = \bin2hex(\random_bytes(32));
@@ -232,7 +241,7 @@ function setup_complete(): bool {
     try {
         db_init();
         return get_config('setup_complete', '0') === '1';
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
         return false;
     }
 }
@@ -367,9 +376,77 @@ function log_error(string $message, string $level = 'error'): void {
 
         // Auto-prune old entries
         $db->exec('DELETE FROM mm_logs WHERE id NOT IN (SELECT id FROM mm_logs ORDER BY id DESC LIMIT ' . LOG_MAX_ENTRIES . ')');
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
         // Silently fail — can't log a logging failure
     }
+}
+
+// ─── Timezone & Local Days ──────────────────────────────────────────────────
+// All day boundaries (daily salt, summaries, charts, retention) use one timezone:
+// the `timezone` setting, falling back to PHP's default.
+
+/**
+ * Check whether a string is a valid timezone identifier.
+ */
+function is_valid_timezone(string $tz): bool {
+    return $tz !== '' && \in_array($tz, \DateTimeZone::listIdentifiers(), true);
+}
+
+/**
+ * Apply the configured timezone to all date functions for this request.
+ */
+function apply_timezone(): void {
+    try {
+        $tz = (string) get_config('timezone', '');
+    } catch (\Throwable $e) {
+        return;
+    }
+    if (is_valid_timezone($tz)) {
+        \date_default_timezone_set($tz);
+    }
+}
+
+/**
+ * Check a Y-m-d string is a real calendar date.
+ */
+function is_valid_date(string $date): bool {
+    $dt = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+    return $dt !== false && $dt->format('Y-m-d') === $date;
+}
+
+/**
+ * Unix timestamp of local midnight at the start of a Y-m-d day.
+ */
+function day_start(string $date): int {
+    return (new \DateTimeImmutable($date . ' 00:00:00'))->getTimestamp();
+}
+
+/**
+ * The Y-m-d day after the given one (DST-safe).
+ */
+function next_date(string $date): string {
+    return (new \DateTimeImmutable($date))->modify('+1 day')->format('Y-m-d');
+}
+
+/**
+ * Local midnight that separates raw data from data due for summarization.
+ * Always a day boundary, so a day is never partly summarized and partly raw.
+ */
+function retention_cutoff_ts(int $retentionDays): int {
+    $date = (new \DateTimeImmutable('today'))->modify('-' . \max(1, $retentionDays) . ' days')->format('Y-m-d');
+    return day_start($date);
+}
+
+/**
+ * Replace any non-string request value (e.g. ?page[]=x) with an empty string.
+ */
+function scalar_input(array $input): array {
+    foreach ($input as $key => $value) {
+        if (!\is_string($value)) {
+            $input[$key] = '';
+        }
+    }
+    return $input;
 }
 
 /**

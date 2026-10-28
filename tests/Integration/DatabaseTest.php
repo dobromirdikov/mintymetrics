@@ -28,7 +28,7 @@ class DatabaseTest extends IntegrationTestCase
     public function testSchemaVersionIsSet(): void
     {
         $version = self::$testDb->querySingle("SELECT value FROM settings WHERE key = 'schema_version'");
-        $this->assertSame('3', $version);
+        $this->assertSame((string) \MintyMetrics\SCHEMA_VERSION, $version);
     }
 
     public function testSchemaCreatesIndexes(): void
@@ -234,7 +234,7 @@ class DatabaseTest extends IntegrationTestCase
 
         // v1→v2 migration cascades through to v3 in a single db_init_with call
         $version = $v1Db->querySingle("SELECT value FROM settings WHERE key = 'schema_version'");
-        $this->assertSame('3', $version);
+        $this->assertSame((string) \MintyMetrics\SCHEMA_VERSION, $version);
 
         // The cascading v2→v3 should also have created the events table
         $hasEvents = (int) $v1Db->querySingle("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='events'");
@@ -292,7 +292,7 @@ class DatabaseTest extends IntegrationTestCase
 
         // Verify schema version bumped
         $version = $v2Db->querySingle("SELECT value FROM settings WHERE key = 'schema_version'");
-        $this->assertSame('3', $version);
+        $this->assertSame((string) \MintyMetrics\SCHEMA_VERSION, $version);
 
         $v2Db->close();
         @unlink($v2Path);
@@ -359,5 +359,123 @@ class DatabaseTest extends IntegrationTestCase
         $this->assertSame(3, $this->countRows('hits'));
         $this->assertSame(2, $this->countRows('hits', "browser = 'Chrome'"));
         $this->assertSame(1, $this->countRows('hits', "browser = 'Firefox'"));
+    }
+
+    // ─── Connection Settings & v4 Migration ─────────────────────────────
+
+    private function withTempDb(callable $fn): void
+    {
+        $path = sys_get_temp_dir() . '/mintymetrics_tmp_' . uniqid() . '.sqlite';
+        $db = new \SQLite3($path);
+        try {
+            $fn($db);
+        } finally {
+            $db->close();
+            @unlink($path);
+            @unlink($path . '-wal');
+            @unlink($path . '-shm');
+        }
+    }
+
+    public function testConfigureEnablesExceptionsAndWal(): void
+    {
+        $this->withTempDb(function (\SQLite3 $db) {
+            \MintyMetrics\db_configure($db, true);
+            $this->assertSame('wal', strtolower($db->querySingle('PRAGMA journal_mode')));
+            $this->assertSame(5000, (int) $db->querySingle('PRAGMA busy_timeout'));
+
+            $this->expectException(\Exception::class);
+            $db->exec('SELECT * FROM no_such_table');
+        });
+    }
+
+    public function testNewDatabaseGetsIncrementalAutoVacuum(): void
+    {
+        $this->withTempDb(function (\SQLite3 $db) {
+            \MintyMetrics\db_configure($db, true);
+            \MintyMetrics\db_init_with($db);
+            // 2 = INCREMENTAL; only takes effect if set before WAL and table creation
+            $this->assertSame(2, (int) $db->querySingle('PRAGMA auto_vacuum'));
+        });
+    }
+
+    public function testMigrationV3ToV4BackfillsSummaryCounters(): void
+    {
+        $this->withTempDb(function (\SQLite3 $db) {
+            \MintyMetrics\db_configure($db, true);
+            \MintyMetrics\db_init_with($db);
+
+            // Rebuild daily_summaries in its v3 shape and roll the version back
+            $db->exec('DROP TABLE daily_summaries');
+            $db->exec("CREATE TABLE daily_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, site TEXT NOT NULL DEFAULT '',
+                pageviews INTEGER NOT NULL DEFAULT 0, unique_visitors INTEGER NOT NULL DEFAULT 0,
+                bounce_rate REAL DEFAULT NULL, avg_time_on_page REAL DEFAULT NULL,
+                top_pages TEXT, top_referrers TEXT, top_countries TEXT, devices TEXT, browsers TEXT,
+                operating_systems TEXT, utm_summary TEXT, screens TEXT, languages TEXT, UNIQUE(date, site))");
+            $db->exec("INSERT INTO daily_summaries (date, site, pageviews, unique_visitors, bounce_rate, avg_time_on_page)
+                VALUES ('2026-01-01', 'a.com', 10, 4, 0.5, 30), ('2026-01-02', 'a.com', 6, 3, NULL, NULL)");
+            $db->exec("UPDATE settings SET value = '3' WHERE key = 'schema_version'");
+
+            \MintyMetrics\db_init_with($db);
+
+            $this->assertSame((string) \MintyMetrics\SCHEMA_VERSION, $db->querySingle("SELECT value FROM settings WHERE key = 'schema_version'"));
+            $row = $db->querySingle("SELECT visitor_days, bounced, time_sum, time_count FROM daily_summaries WHERE date = '2026-01-01'", true);
+            $this->assertSame(4, (int) $row['visitor_days']);
+            $this->assertSame(2, (int) $row['bounced']);
+            $this->assertEqualsWithDelta(300.0, (float) $row['time_sum'], 0.01);
+            $this->assertSame(10, (int) $row['time_count']);
+            $row = $db->querySingle("SELECT bounced, time_count FROM daily_summaries WHERE date = '2026-01-02'", true);
+            $this->assertSame(0, (int) $row['bounced']);
+            $this->assertSame(0, (int) $row['time_count']);
+        });
+    }
+
+    public function testFailedMigrationThrowsAndKeepsVersion(): void
+    {
+        $this->withTempDb(function (\SQLite3 $db) {
+            \MintyMetrics\db_configure($db, true);
+            \MintyMetrics\db_init_with($db);
+            $db->exec('DROP TABLE daily_summaries');
+            $db->exec("UPDATE settings SET value = '3' WHERE key = 'schema_version'");
+
+            $logFile = tempnam(sys_get_temp_dir(), 'mmlog');
+            $prevLog = ini_set('error_log', $logFile);
+            try {
+                \MintyMetrics\db_init_with($db);
+                $this->fail('Migration on a broken schema should throw');
+            } catch (\Throwable $e) {
+                $this->assertSame('3', $db->querySingle("SELECT value FROM settings WHERE key = 'schema_version'"));
+                $this->assertStringContainsString('migration v3 to v4', file_get_contents($logFile));
+            } finally {
+                ini_set('error_log', $prevLog === false ? '' : $prevLog);
+                @unlink($logFile);
+            }
+        });
+    }
+
+    public function testFailedSaltRotationDoesNotSwallowLaterWrites(): void
+    {
+        $path = sys_get_temp_dir() . '/mintymetrics_salt_' . uniqid() . '.sqlite';
+        try {
+            $out = shell_exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__DIR__ . '/../fixtures/salt_rollback.php') . ' ' . escapeshellarg($path) . ' 2>&1');
+            $this->assertSame('persisted', trim((string) $out));
+        } finally {
+            @unlink($path);
+            @unlink($path . '-wal');
+            @unlink($path . '-shm');
+        }
+    }
+
+    public function testDbSizeExcludesFreePages(): void
+    {
+        $before = \MintyMetrics\db_size_mb();
+        for ($i = 0; $i < 2000; $i++) {
+            $this->insertHit(['page_path' => str_repeat('x', 400)]);
+        }
+        $grown = \MintyMetrics\db_size_mb();
+        self::$testDb->exec('DELETE FROM hits');
+        $this->assertGreaterThan($before, $grown);
+        $this->assertLessThan($grown, \MintyMetrics\db_size_mb(), 'Deleted rows should not count towards the size limit');
     }
 }

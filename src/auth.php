@@ -125,7 +125,7 @@ function auth_has_password(): bool {
     try {
         $row = db()->querySingle('SELECT id FROM auth LIMIT 1');
         return $row !== null && $row !== false;
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
         return false;
     }
 }

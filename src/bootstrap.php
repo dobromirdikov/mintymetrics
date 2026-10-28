@@ -40,10 +40,19 @@ if (\realpath(__FILE__) !== \realpath($_SERVER['SCRIPT_FILENAME'] ?? '')) {
 // ─── Direct Access: Route by Query Parameters ──────────────────────────────
 // Priority order: tracking endpoints first (no session needed), then dashboard routes.
 
+// Warnings must never leak into pixel, JSON, or CSV responses (or break headers).
+\ini_set('display_errors', '0');
+\ini_set('log_errors', '1');
+
+// Every handler expects scalar strings; array params like ?page[]=x become ''.
+$_GET = scalar_input($_GET);
+$_POST = scalar_input($_POST);
+
 // Tracking endpoints — no session, no auth, minimal overhead
 // Skip if setup hasn't been completed (avoids creating DB on fresh installs)
 if (isset($_GET['hit'])) {
     if (!db_marker_exists()) { serve_pixel(); return; }
+    apply_timezone();
     track_hit();
     serve_pixel();
     return;
@@ -51,12 +60,14 @@ if (isset($_GET['hit'])) {
 
 if (isset($_GET['beacon'])) {
     if (!db_marker_exists()) { \http_response_code(204); return; }
+    apply_timezone();
     track_beacon();
     return;
 }
 
 if (isset($_GET['event'])) {
     if (!db_marker_exists()) { serve_pixel(); return; }
+    apply_timezone();
     track_event();
     serve_pixel();
     return;
@@ -87,6 +98,8 @@ if (!setup_complete()) {
     render_setup();
     return;
 }
+
+apply_timezone();
 
 // Login/logout
 if (isset($_GET['login']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -134,17 +147,7 @@ if (isset($_GET['api'])) {
 }
 
 if (isset($_GET['export'])) {
-    $type = $_GET['type'] ?? 'pageviews';
-    $rawSite = $_GET['site'] ?? '';
-    if (\str_contains($rawSite, ',')) {
-        $parts = \array_filter(\array_map(function($s) { return sanitize_site(\trim($s)); }, \explode(',', $rawSite)));
-        $site = \implode(',', \array_unique($parts));
-    } else {
-        $site = sanitize_site($rawSite);
-    }
-    $from = $_GET['from'] ?? \date('Y-m-d', \strtotime('-7 days'));
-    $to = $_GET['to'] ?? \date('Y-m-d');
-    export_csv($type, $site, $from, $to);
+    export_csv($_GET['type'] ?? 'pageviews', parse_site_param($_GET['site'] ?? ''), $_GET['from'] ?? null, $_GET['to'] ?? null);
     return;
 }
 

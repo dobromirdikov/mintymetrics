@@ -22,9 +22,7 @@ abstract class IntegrationTestCase extends TestCase
         // Create a temp SQLite file for each test
         self::$testDbPath = sys_get_temp_dir() . '/mintymetrics_test_' . uniqid() . '.sqlite';
         self::$testDb = new \SQLite3(self::$testDbPath);
-        self::$testDb->exec('PRAGMA journal_mode = WAL');
-        self::$testDb->exec('PRAGMA busy_timeout = 5000');
-        self::$testDb->exec('PRAGMA foreign_keys = ON');
+        \MintyMetrics\db_configure(self::$testDb, true);
 
         // Initialize schema
         \MintyMetrics\db_init_with(self::$testDb);

@@ -6,27 +6,21 @@ namespace MintyMetrics;
  */
 const EXPORT_MAX_ROWS = 100000;
 
-function export_csv(string $type, string $site, string $from, string $to): void {
+function export_csv(string $type, string $site, ?string $from, ?string $to): void {
     auth_require();
 
-    if (!\preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) || !\preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
+    $range = parse_date_range($from, $to);
+    if (isset($range['error'])) {
         \http_response_code(400);
-        echo 'Invalid date format.';
+        \header('Content-Type: text/plain; charset=utf-8');
+        echo $range['error'] . '.';
         return;
     }
-
-    $fromTs = \strtotime($from . ' 00:00:00');
-    $toTs = \strtotime($to . ' 23:59:59');
-
-    if (!$fromTs || !$toTs) {
-        \http_response_code(400);
-        echo 'Invalid date range.';
-        return;
-    }
+    [$from, $to, $fromTs, $toTs] = [$range['from'], $range['to'], $range['fromTs'], $range['toTs']];
 
     // Sanitize type for filename (allow-list)
     $safeType = match ($type) {
-        'pageviews', 'pages', 'referrers', 'utm', 'countries', 'events' => $type,
+        'pageviews', 'pages', 'referrers', 'utm', 'countries', 'events', 'summaries' => $type,
         default => 'export',
     };
     $filename = "mintymetrics-{$safeType}-{$from}-to-{$to}.csv";
@@ -34,8 +28,17 @@ function export_csv(string $type, string $site, string $from, string $to): void 
     \header('Content-Type: text/csv; charset=utf-8');
     \header('Content-Disposition: attachment; filename="' . $filename . '"');
     \header('Cache-Control: no-store');
+    \header('X-Content-Type-Options: nosniff');
 
     $output = \fopen('php://output', 'w');
+    with_read_snapshot(fn() => export_rows($output, $type, $site, $from, $to, $fromTs, $toTs));
+    \fclose($output);
+}
+
+/**
+ * Write the CSV for one export type to a stream.
+ */
+function export_rows($output, string $type, string $site, string $from, string $to, int $fromTs, int $toTs): void {
     $db = db();
 
     $where = 'created_at BETWEEN :from AND :to';
@@ -44,104 +47,130 @@ function export_csv(string $type, string $site, string $from, string $to): void 
 
     switch ($type) {
         case 'pageviews':
-            \fputcsv($output, ['Date', 'Page', 'Visitor Hash', 'Referrer', 'Country', 'Device', 'Browser', 'OS', 'Screen', 'Language', 'Time on Page']);
+            csv_row($output, ['Date', 'Page', 'Visitor Hash', 'Referrer', 'Country', 'Device', 'Browser', 'OS', 'Screen', 'Language', 'Time on Page']);
             $stmt = $db->prepare("
-                SELECT datetime(created_at, 'unixepoch') as date, page_path, visitor_hash, referrer_domain,
+                SELECT created_at, page_path, visitor_hash, referrer_domain,
                     country_code, device_type, browser, os, screen_res, language, time_on_page
                 FROM hits WHERE {$where}
                 ORDER BY created_at DESC
                 LIMIT " . EXPORT_MAX_ROWS . "
             ");
-            bind_params($stmt, $params);
-            $result = $stmt->execute();
-            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-                \fputcsv($output, \array_values($row));
-            }
+            csv_stream($output, $stmt, $params, true);
             break;
 
         case 'pages':
-            \fputcsv($output, ['Page', 'Pageviews', 'Unique Visitors']);
+            csv_row($output, ['Page', 'Pageviews', 'Unique Visitors']);
             $stmt = $db->prepare("
                 SELECT page_path, COUNT(*) as views, COUNT(DISTINCT visitor_hash) as uniques
                 FROM hits WHERE {$where}
                 GROUP BY page_path
                 ORDER BY views DESC
             ");
-            bind_params($stmt, $params);
-            $result = $stmt->execute();
-            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-                \fputcsv($output, \array_values($row));
-            }
+            csv_stream($output, $stmt, $params);
             break;
 
         case 'referrers':
-            \fputcsv($output, ['Referrer Domain', 'Visitors', 'Pageviews']);
+            csv_row($output, ['Referrer Domain', 'Visitors', 'Pageviews']);
             $stmt = $db->prepare("
                 SELECT referrer_domain, COUNT(DISTINCT visitor_hash) as visitors, COUNT(*) as views
                 FROM hits WHERE {$where} AND referrer_domain IS NOT NULL
+                    AND referrer_domain != site AND referrer_domain != ('www.' || site) AND ('www.' || referrer_domain) != site
                 GROUP BY referrer_domain
                 ORDER BY visitors DESC
             ");
-            bind_params($stmt, $params);
-            $result = $stmt->execute();
-            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-                \fputcsv($output, \array_values($row));
-            }
+            csv_stream($output, $stmt, $params);
             break;
 
         case 'utm':
-            \fputcsv($output, ['Source', 'Medium', 'Campaign', 'Visitors']);
+            csv_row($output, ['Source', 'Medium', 'Campaign', 'Visitors']);
             $stmt = $db->prepare("
                 SELECT utm_source, utm_medium, utm_campaign, COUNT(DISTINCT visitor_hash) as visitors
-                FROM hits WHERE {$where} AND (utm_source IS NOT NULL OR utm_medium IS NOT NULL)
+                FROM hits WHERE {$where}
+                    AND (utm_source IS NOT NULL OR utm_medium IS NOT NULL OR utm_campaign IS NOT NULL)
                 GROUP BY utm_source, utm_medium, utm_campaign
                 ORDER BY visitors DESC
             ");
-            bind_params($stmt, $params);
-            $result = $stmt->execute();
-            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-                \fputcsv($output, \array_values($row));
-            }
+            csv_stream($output, $stmt, $params);
             break;
 
         case 'countries':
-            \fputcsv($output, ['Country Code', 'Visitors']);
+            csv_row($output, ['Country Code', 'Visitors']);
             $stmt = $db->prepare("
                 SELECT country_code, COUNT(DISTINCT visitor_hash) as visitors
                 FROM hits WHERE {$where} AND country_code IS NOT NULL
                 GROUP BY country_code
                 ORDER BY visitors DESC
             ");
-            bind_params($stmt, $params);
-            $result = $stmt->execute();
-            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-                \fputcsv($output, \array_values($row));
-            }
+            csv_stream($output, $stmt, $params);
             break;
 
         case 'events':
-            \fputcsv($output, ['Date', 'Name', 'Value', 'Props', 'Visitor Hash', 'Page', 'Country', 'Device', 'Browser', 'OS']);
+            csv_row($output, ['Date', 'Name', 'Value', 'Props', 'Visitor Hash', 'Page', 'Country', 'Device', 'Browser', 'OS']);
             if (!table_exists($db, 'events')) {
                 break;
             }
             $stmt = $db->prepare("
-                SELECT datetime(created_at, 'unixepoch') as date, name, value, props, visitor_hash,
+                SELECT created_at, name, value, props, visitor_hash,
                     page_path, country_code, device_type, browser, os
                 FROM events WHERE {$where}
                 ORDER BY created_at DESC
                 LIMIT " . EXPORT_MAX_ROWS . "
             ");
-            bind_params($stmt, $params);
-            $result = $stmt->execute();
-            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-                \fputcsv($output, \array_values($row));
-            }
+            csv_stream($output, $stmt, $params, true);
+            break;
+
+        case 'summaries':
+            // Daily totals kept after raw hits expire
+            csv_row($output, ['Date', 'Site', 'Pageviews', 'Unique Visitors', 'Single-Page Visit Rate', 'Avg Time on Page']);
+            $swhere = 'date BETWEEN :from AND :to';
+            $sparams = [':from' => $from, ':to' => $to];
+            apply_site_filter($swhere, $sparams, $site);
+            $stmt = $db->prepare("
+                SELECT date, site, pageviews, unique_visitors, bounce_rate, avg_time_on_page
+                FROM daily_summaries WHERE {$swhere}
+                ORDER BY date DESC, site
+            ");
+            csv_stream($output, $stmt, $sparams);
             break;
 
         default:
-            \fputcsv($output, ['Error']);
-            \fputcsv($output, ['Unknown export type: ' . $type]);
+            csv_row($output, ['Error']);
+            csv_row($output, ['Unknown export type: ' . $type]);
     }
+}
 
-    \fclose($output);
+/**
+ * Execute a statement and write each row. With $firstIsTimestamp, the first
+ * column is a Unix timestamp rendered in the configured local timezone.
+ */
+function csv_stream($output, \SQLite3Stmt $stmt, array $params, bool $firstIsTimestamp = false): void {
+    bind_params($stmt, $params);
+    $result = $stmt->execute();
+    while ($row = $result->fetchArray(SQLITE3_NUM)) {
+        if ($firstIsTimestamp) {
+            $row[0] = \date('Y-m-d H:i:s', (int) $row[0]);
+        }
+        csv_row($output, $row);
+    }
+}
+
+/**
+ * Write one CSV row with spreadsheet formula injection neutralized.
+ */
+function csv_row($output, array $fields): void {
+    \fputcsv($output, \array_map('MintyMetrics\csv_safe', $fields), ',', '"', '');
+}
+
+/**
+ * Prefix cells that a spreadsheet would treat as a formula. Page paths, UTM tags,
+ * event values and props all come from anonymous visitors.
+ */
+function csv_safe(mixed $value): mixed {
+    if (!\is_string($value) || $value === '') {
+        return $value;
+    }
+    if (\str_contains("=+-@\t\r", $value[0])) {
+        return "'" . $value;
+    }
+    return $value;
 }

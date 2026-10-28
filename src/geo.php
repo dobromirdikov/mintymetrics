@@ -115,7 +115,7 @@ function geo_lookup(string $ip): ?string {
         }
         try {
             $reader = new GeoReader($path);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             log_error('geo_lookup: ' . $e->getMessage());
             return null;
         }
@@ -123,7 +123,7 @@ function geo_lookup(string $ip): ?string {
 
     try {
         return $reader->lookup($ip);
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
         return null;
     }
 }
@@ -193,7 +193,7 @@ function geo_upload(): array {
         $reader = new GeoReader($tempPath);
         $test = $reader->lookup('8.8.8.8');
         unset($reader);
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
         @\unlink($tempPath);
         log_error('geo_upload validation: ' . $e->getMessage());
         return ['success' => false, 'message' => 'File validation failed. Ensure this is a valid IP2Location BIN file.'];
@@ -263,7 +263,7 @@ function geo_download(): array {
     try {
         $reader = new GeoReader($tempPath);
         unset($reader);
-    } catch (\Exception $e) {
+    } catch (\Throwable $e) {
         @\unlink($tempPath);
         return ['success' => false, 'message' => 'Downloaded file is not a valid IP2Location BIN database.'];
     }
