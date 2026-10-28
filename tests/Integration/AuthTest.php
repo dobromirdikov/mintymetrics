@@ -6,6 +6,11 @@ use MintyMetrics\Tests\IntegrationTestCase;
 
 class AuthTest extends IntegrationTestCase
 {
+    private function globalFailures(): int
+    {
+        return (int) self::$testDb->querySingle("SELECT failures FROM login_attempts WHERE client_key = 'global'");
+    }
+
     // ─── Password Management ────────────────────────────────────────────
 
     public function testAuthSetPasswordCreatesRecord(): void
@@ -84,13 +89,11 @@ class AuthTest extends IntegrationTestCase
 
         // Fail once
         \MintyMetrics\auth_login('wrong1');
-        $row = self::$testDb->querySingle('SELECT failed_attempts FROM auth LIMIT 1', true);
-        $this->assertSame(1, (int) $row['failed_attempts']);
+        $this->assertSame(1, $this->globalFailures());
 
         // Fail again
         \MintyMetrics\auth_login('wrong2');
-        $row = self::$testDb->querySingle('SELECT failed_attempts FROM auth LIMIT 1', true);
-        $this->assertSame(2, (int) $row['failed_attempts']);
+        $this->assertSame(2, $this->globalFailures());
     }
 
     public function testAuthLoginResetsFailedAttemptsOnSuccess(): void
@@ -101,13 +104,13 @@ class AuthTest extends IntegrationTestCase
         \MintyMetrics\auth_login('wrong');
 
         // Verify attempts accumulated
-        $row = self::$testDb->querySingle('SELECT failed_attempts FROM auth LIMIT 1', true);
-        $this->assertSame(2, (int) $row['failed_attempts']);
+        $this->assertSame(2, $this->globalFailures());
 
-        // Successful login
-        \MintyMetrics\auth_login('MyPass');
-        $row = self::$testDb->querySingle('SELECT failed_attempts FROM auth LIMIT 1', true);
-        $this->assertSame(0, (int) $row['failed_attempts']);
+        // Successful login clears this client's failures; the global counter only
+        // drops the reservation for the successful attempt itself
+        $this->assertTrue(\MintyMetrics\auth_login('MyPass'));
+        $this->assertSame(0, $this->countRows('login_attempts', "client_key != 'global'"));
+        $this->assertSame(2, $this->globalFailures());
     }
 
     public function testAuthLoginLockoutAfterMaxAttempts(): void
@@ -119,10 +122,9 @@ class AuthTest extends IntegrationTestCase
             \MintyMetrics\auth_login('wrong');
         }
 
-        // Verify lockout is set
-        $row = self::$testDb->querySingle('SELECT lockout_until FROM auth LIMIT 1', true);
-        $this->assertNotNull($row['lockout_until']);
-        $this->assertGreaterThan(time(), (int) $row['lockout_until']);
+        // Verify this client is locked
+        $row = self::$testDb->querySingle('SELECT locked_until FROM login_attempts LIMIT 1', true);
+        $this->assertGreaterThan(time(), (int) $row['locked_until']);
 
         // Even correct password should fail during lockout
         $result = \MintyMetrics\auth_login('MyPass');
@@ -154,13 +156,11 @@ class AuthTest extends IntegrationTestCase
 
         // Fail some login attempts first
         \MintyMetrics\auth_login('wrong');
-        $row = self::$testDb->querySingle('SELECT failed_attempts FROM auth LIMIT 1', true);
-        $this->assertSame(1, (int) $row['failed_attempts']);
+        $this->assertSame(1, $this->globalFailures());
 
         // auth_verify_password should not reset failed_attempts
         \MintyMetrics\auth_verify_password('NoSideEffects');
-        $row = self::$testDb->querySingle('SELECT failed_attempts FROM auth LIMIT 1', true);
-        $this->assertSame(1, (int) $row['failed_attempts'], 'auth_verify_password should not reset failed_attempts');
+        $this->assertSame(1, $this->globalFailures(), 'auth_verify_password should not reset failed_attempts');
     }
 
     // ─── Auth Check ─────────────────────────────────────────────────────
@@ -172,8 +172,141 @@ class AuthTest extends IntegrationTestCase
 
     public function testAuthCheckReturnsTrueWhenAuthenticated(): void
     {
-        $_SESSION['_mm_authenticated'] = true;
+        \MintyMetrics\auth_set_password('Password123');
+        $this->assertTrue(\MintyMetrics\auth_login('Password123'));
         $this->assertTrue(\MintyMetrics\auth_check());
+    }
+
+    public function testSessionWithoutCredentialVersionIsRejected(): void
+    {
+        \MintyMetrics\auth_set_password('Password123');
+        $_SESSION['_mm_authenticated'] = true;
+        $this->assertFalse(\MintyMetrics\auth_check());
+    }
+
+    public function testPasswordChangeSignsOutExistingSessions(): void
+    {
+        \MintyMetrics\auth_set_password('Password123');
+        $this->assertTrue(\MintyMetrics\auth_login('Password123'));
+        $stolen = $_SESSION;
+
+        \MintyMetrics\auth_set_password('NewPassword456');
+
+        $_SESSION = $stolen;
+        $this->assertFalse(\MintyMetrics\auth_check(), 'A session from before the change must stop working');
+    }
+
+    public function testLockedOutClientDoesNotLockOutOthers(): void
+    {
+        \MintyMetrics\auth_set_password('MyPass');
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.7';
+        for ($i = 0; $i < \MintyMetrics\LOGIN_MAX_ATTEMPTS + 3; $i++) {
+            \MintyMetrics\auth_login('wrong');
+        }
+        $this->assertFalse(\MintyMetrics\auth_login('MyPass'), 'The attacking client stays locked');
+
+        $_SERVER['REMOTE_ADDR'] = '198.51.100.20';
+        $this->assertTrue(\MintyMetrics\auth_login('MyPass'), 'The admin from another address can still sign in');
+    }
+
+    public function testGlobalLimitStopsDistributedGuessing(): void
+    {
+        \MintyMetrics\auth_set_password('MyPass');
+        for ($i = 0; $i < \MintyMetrics\LOGIN_GLOBAL_MAX_ATTEMPTS; $i++) {
+            $_SERVER['REMOTE_ADDR'] = '203.0.113.' . ($i % 250);
+            \MintyMetrics\auth_login('wrong');
+        }
+        $_SERVER['REMOTE_ADDR'] = '198.51.100.20';
+        $this->assertFalse(\MintyMetrics\auth_login('MyPass'));
+    }
+
+    public function testLoginThrottleKeysDoNotStoreRawIps(): void
+    {
+        \MintyMetrics\auth_set_password('MyPass');
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.7';
+        \MintyMetrics\auth_login('wrong');
+        $key = self::$testDb->querySingle('SELECT client_key FROM login_attempts');
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $key);
+        $this->assertNotSame(hash('sha256', '203.0.113.7'), $key, 'Keys are HMACs with a per-install secret');
+    }
+
+    public function testLoginNeverSignsInAPreExistingSessionId(): void
+    {
+        $dir = sys_get_temp_dir() . '/mm_sess_' . uniqid();
+        mkdir($dir);
+        $dbPath = $dir . '/db.sqlite';
+        try {
+            $out = shell_exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__DIR__ . '/../fixtures/login_fixation.php')
+                . ' ' . escapeshellarg($dbPath) . ' ' . escapeshellarg($dir) . ' 2>&1');
+            $r = json_decode((string) $out, true);
+            $this->assertIsArray($r, (string) $out);
+            $this->assertTrue($r['ok']);
+            $this->assertTrue($r['rotated']);
+            $this->assertFalse($r['old_signed_in'], 'The pre-login session ID must not carry the signed-in state');
+            $this->assertFalse($r['old_exists'], 'The pre-login session is destroyed');
+            $this->assertTrue($r['new_signed_in']);
+        } finally {
+            array_map('unlink', glob($dir . '/*') ?: []);
+            @rmdir($dir);
+        }
+    }
+
+    public function testSessionPinnedToVerifiedHashGoesStaleOnConcurrentChange(): void
+    {
+        \MintyMetrics\auth_set_password('OldPassword1');
+        $oldHash = self::$testDb->querySingle('SELECT password_hash FROM auth');
+        // A password change lands between verifying the old password and creating the session
+        \MintyMetrics\auth_set_password('NewPassword2');
+        \MintyMetrics\auth_establish_session($oldHash);
+        $this->assertFalse(\MintyMetrics\auth_check());
+    }
+
+    public function testSetPasswordReturnsTheExactStoredHash(): void
+    {
+        $hash = \MintyMetrics\auth_set_password('Fresh1234');
+        $this->assertSame(self::$testDb->querySingle('SELECT password_hash FROM auth'), $hash);
+
+        // A concurrent reset after this write must invalidate a session pinned to $hash
+        \MintyMetrics\auth_set_password('ResetByCli1');
+        \MintyMetrics\auth_establish_session($hash);
+        $this->assertFalse(\MintyMetrics\auth_check());
+    }
+
+    public function testGlobalCounterIsAFixedWindow(): void
+    {
+        \MintyMetrics\auth_set_password('MyPass');
+        // 49 old failures whose window started 16 minutes ago
+        self::$testDb->exec("INSERT INTO login_attempts (client_key, failures, window_start, locked_until)
+            VALUES ('global', 49, " . (time() - 16 * 60) . ", 0)");
+        \MintyMetrics\auth_login('wrong');
+        $row = self::$testDb->querySingle("SELECT failures, locked_until FROM login_attempts WHERE client_key = 'global'", true);
+        $this->assertSame(1, (int) $row['failures'], 'A new window starts after 15 minutes');
+        $this->assertSame(0, (int) $row['locked_until']);
+    }
+
+    public function testCorrectPasswordOnLimitBoundaryDoesNotLockEveryone(): void
+    {
+        \MintyMetrics\auth_set_password('MyPass');
+        self::$testDb->exec("INSERT INTO login_attempts (client_key, failures, window_start, locked_until)
+            VALUES ('global', " . (\MintyMetrics\LOGIN_GLOBAL_MAX_ATTEMPTS - 1) . ", " . time() . ", 0)");
+
+        $this->assertTrue(\MintyMetrics\auth_login('MyPass'), 'The 50th attempt with the right password succeeds');
+
+        $row = self::$testDb->querySingle("SELECT failures, locked_until FROM login_attempts WHERE client_key = 'global'", true);
+        $this->assertSame(\MintyMetrics\LOGIN_GLOBAL_MAX_ATTEMPTS - 1, (int) $row['failures']);
+        $this->assertSame(0, (int) $row['locked_until'], 'Its own reservation must not leave a global lock behind');
+        $_SERVER['REMOTE_ADDR'] = '198.51.100.99';
+        $this->assertTrue(\MintyMetrics\auth_login('MyPass'));
+    }
+
+    public function testCliResetClearsLoginLimits(): void
+    {
+        \MintyMetrics\auth_set_password('MyPass');
+        for ($i = 0; $i < \MintyMetrics\LOGIN_MAX_ATTEMPTS; $i++) {
+            \MintyMetrics\auth_login('wrong');
+        }
+        \MintyMetrics\auth_clear_login_limits();
+        $this->assertTrue(\MintyMetrics\auth_login('MyPass'));
     }
 
     // ─── CSRF ───────────────────────────────────────────────────────────

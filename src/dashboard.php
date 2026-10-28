@@ -55,7 +55,7 @@ CSSBLOCK;
         <a href="?help" class="mm-nav-link" data-modal="help" title="Tracking Code">
             <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
         </a>
-        <form method="POST" action="' . e(script_url()) . '?logout" class="mm-nav-form">
+        <form method="POST" action="' . e(script_path()) . '?logout" class="mm-nav-form">
             ' . csrf_field() . '
             <button type="submit" class="mm-nav-link mm-nav-logout" title="Logout">
                 <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 3a1 1 0 011-1h12a1 1 0 011 1v4a1 1 0 01-2 0V4H5v12h10v-3a1 1 0 112 0v4a1 1 0 01-1 1H4a1 1 0 01-1-1V3z" clip-rule="evenodd"/><path d="M13.293 9.293a1 1 0 011.414 0l2 2a1 1 0 010 1.414l-2 2a1 1 0 01-1.414-1.414L14.586 12H7a1 1 0 110-2h7.586l-1.293-1.293a1 1 0 010-1.414z"/></svg>
@@ -280,7 +280,7 @@ function render_compliance(): void {
 </head>
 <body>
     <div class="mm-compliance">
-        <a href="' . e(script_url()) . '" class="mm-back">&larr; Back to Dashboard</a>
+        <a href="' . e(script_path()) . '" class="mm-back">&larr; Back to Dashboard</a>
         <h1>Privacy &amp; GDPR Compliance</h1>
 
         <h2>What data is collected</h2>
@@ -377,7 +377,7 @@ function render_health(): void {
 </head>
 <body>
     <div class="mm-health">
-        <a href="' . e(script_url()) . '" class="mm-back">&larr; Back to Dashboard</a>';
+        <a href="' . e(script_path()) . '" class="mm-back">&larr; Back to Dashboard</a>';
     } else {
         echo '<div class="mm-health">';
     }
@@ -392,32 +392,44 @@ function render_health(): void {
     // Password
     echo '<div class="mm-health-item"><span class="mm-health-icon ok">&#10003;</span><div><div class="mm-health-label">Password configured</div></div></div>';
 
-    // DB location detection
+    // DB location detection. "One directory up" is only safe if that is outside DOCUMENT_ROOT.
     $dbPath = get_db_path();
-    $scriptDir = \dirname(\realpath($_SERVER['SCRIPT_FILENAME'] ?? __FILE__));
-    $dbRealPath = \realpath($dbPath) ?: $dbPath;
-    $dbInWebRoot = \str_starts_with($dbRealPath, $scriptDir);
+    $dbInWebRoot = path_in_docroot($dbPath);
+    $dbNextToScript = \dirname(\realpath($dbPath) ?: $dbPath) === app_dir();
 
     // Server type detection and .htaccess
     $serverSoftware = $_SERVER['SERVER_SOFTWARE'] ?? '';
     $isApache = \stripos($serverSoftware, 'apache') !== false || \stripos($serverSoftware, 'litespeed') !== false;
     $isNginx = \stripos($serverSoftware, 'nginx') !== false;
 
+    $fixForm = fn(string $label) => '<form method="POST" action="' . e(script_path()) . '?htaccess-fix" class="mm-htaccess-form">'
+        . csrf_field() . '<button type="submit" class="mm-htaccess-btn">' . $label . '</button></form>';
+    $healthRow = fn(string $icon, string $label, string $detail) => '<div class="mm-health-item"><span class="mm-health-icon '
+        . ($icon === 'ok' ? 'ok">&#10003;' : 'warn">&#9888;') . '</span><div><div class="mm-health-label">' . $label
+        . '</div><div class="mm-health-detail">' . $detail . '</div></div></div>';
+
     if (!$dbInWebRoot) {
-        echo '<div class="mm-health-item"><span class="mm-health-icon ok">&#10003;</span><div><div class="mm-health-label">Database protection</div><div class="mm-health-detail">Database is stored outside the web root</div></div></div>';
-    } elseif ($isApache) {
-        if ($htaccess['status'] === 'ok') {
-            echo '<div class="mm-health-item"><span class="mm-health-icon ok">&#10003;</span><div><div class="mm-health-label">Database protection</div><div class="mm-health-detail">Database is in web root but protected via .htaccess</div></div></div>';
-        } elseif ($htaccess['status'] === 'partial') {
-            echo '<div class="mm-health-item"><span class="mm-health-icon warn">&#9888;</span><div><div class="mm-health-label">Database protection</div><div class="mm-health-detail">Database is in web root and rules not found in .htaccess. <form method="POST" action="' . e(script_url()) . '?htaccess-fix" class="mm-htaccess-form">' . csrf_field() . '<button type="submit" class="mm-htaccess-btn">Add automatically</button></form></div></div></div>';
-        } else {
-            echo '<div class="mm-health-item"><span class="mm-health-icon warn">&#9888;</span><div><div class="mm-health-label">Database protection</div><div class="mm-health-detail">Database is in web root with no .htaccess file. <form method="POST" action="' . e(script_url()) . '?htaccess-fix" class="mm-htaccess-form">' . csrf_field() . '<button type="submit" class="mm-htaccess-btn">Create automatically</button></form></div></div></div>';
-        }
+        echo $healthRow('ok', 'Database protection', 'Database is stored outside the web root.');
     } elseif ($isNginx) {
-        echo '<div class="mm-health-item"><span class="mm-health-icon warn">&#9888;</span><div><div class="mm-health-label">Database protection</div><div class="mm-health-detail">Database is in web root. Nginx detected &mdash; add this to your server config:<br><code>location ~* \.(sqlite|sqlite-wal|sqlite-shm|mm_db_marker\.php)$ { deny all; }</code></div></div></div>';
+        echo $healthRow('warn', 'Database protection', 'Database is in the web root. Nginx detected &mdash; add this to your server config:<br>'
+            . '<code>location ~* (mintymetrics-[0-9a-f]+\.sqlite(-wal|-shm|-journal)?|\.mm_db_marker(\.php)?|\.mm_setup_token\.php)$ { deny all; }</code>');
+    } elseif (!$dbNextToScript) {
+        // e.g. "one directory up" that is still inside DOCUMENT_ROOT. That .htaccess usually
+        // belongs to another site, so MintyMetrics does not edit it automatically.
+        echo $healthRow('warn', 'Database protection', 'Database is inside the web root at <code>' . e(\dirname($dbPath))
+            . '</code>. Make sure that folder blocks web access, e.g. add these rules to its <code>.htaccess</code>:<pre>'
+            . e(htaccess_rules()) . '</pre>');
+    } elseif ($isApache && $htaccess['status'] === 'ok') {
+        echo $healthRow('ok', 'Database protection', 'Database is in the web root but protected via .htaccess.');
+    } elseif ($isApache) {
+        echo $healthRow('warn', 'Database protection', $htaccess['status'] === 'partial'
+            ? 'Database is in the web root and .htaccess does not protect its WAL files yet. ' . $fixForm('Update automatically')
+            : 'Database is in the web root with no .htaccess file. ' . $fixForm('Create automatically'));
     } else {
-        echo '<div class="mm-health-item"><span class="mm-health-icon warn">&#9888;</span><div><div class="mm-health-label">Database protection</div><div class="mm-health-detail">Database is in web root. Ensure your server blocks access to .sqlite and .mm_db_marker.php files.</div></div></div>';
+        echo $healthRow('warn', 'Database protection', 'Database is in the web root. Ensure your server blocks access to .sqlite, .sqlite-wal, .sqlite-shm and .mm_db_marker.php files.');
     }
+
+    echo $healthRow('ok', 'Timezone', e(\date_default_timezone_get()) . ' &mdash; days start at midnight here. Change it in <a href="?settings" data-modal="settings">Settings</a>.');
 
     // Geo
     if ($geoAvail) {
@@ -455,9 +467,9 @@ function render_help(): void {
     <div class="mm-help-section">
         <h3 class="mm-help-section-title">PHP Sites <span class="mm-help-badge">same server</span></h3>
         <p>Add these two lines to each page you want to track:</p>
-        <div class="mm-help-code"><code>&lt;?php include \'' . e($filename) . '\'; ?&gt;</code></div>
+        <div class="mm-help-code"><code>&lt;?php include_once \'' . e($filename) . '\'; ?&gt;</code></div>
         <div class="mm-help-code"><code>&lt;?php \\MintyMetrics\\head(); ?&gt;</code></div>
-        <p class="mm-help-note">The <code>include</code> goes at the very top of the file, before any output. The <code>head()</code> call goes inside your <code>&lt;head&gt;</code> tag.</p>
+        <p class="mm-help-note">The <code>include_once</code> goes at the very top of the file, before any output. The <code>head()</code> call goes inside your <code>&lt;head&gt;</code> tag.</p>
     </div>
 
     <div class="mm-help-section">

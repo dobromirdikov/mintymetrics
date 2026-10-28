@@ -22,6 +22,10 @@ const MAX_EVENT_VALUE      = 256;
 const MAX_EVENT_PROPS_JSON = 1024;
 const LOG_MAX_ENTRIES      = 1000;
 const DASHBOARD_TITLE      = 'MintyMetrics';
+const LOGIN_GLOBAL_MAX_ATTEMPTS = 50;
+
+/** .htaccess body that blocks all web access (Apache 2.4 and 2.2). */
+const HTACCESS_DENY_ALL = "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n</IfModule>\n";
 
 // ─── Favicon (inline SVG data URI) ──────────────────────────────────────────
 
@@ -57,17 +61,21 @@ function get_config(string $key, mixed $default = null): mixed {
         return $cache[$key];
     }
 
+    // Only stored values are cached (as strings); a missing key returns this call's
+    // own default instead of whatever default an earlier caller passed.
     try {
         $db = db();
         $stmt = $db->prepare('SELECT value FROM settings WHERE key = :key');
         $stmt->bindValue(':key', $key, SQLITE3_TEXT);
         $result = $stmt->execute();
         $row = $result->fetchArray(SQLITE3_ASSOC);
-        $cache[$key] = $row ? $row['value'] : $default;
     } catch (\Throwable $e) {
-        $cache[$key] = $default;
+        return $default;
     }
-
+    if (!$row) {
+        return $default;
+    }
+    $cache[$key] = (string) $row['value'];
     return $cache[$key];
 }
 
@@ -83,60 +91,216 @@ function set_config(string $key, mixed $value): void {
     $stmt->bindValue(':value', (string) $value, SQLITE3_TEXT);
     $stmt->execute();
 
-    $cache[$key] = $value;
+    $cache[$key] = (string) $value;
+}
+
+/**
+ * Directory containing analytics.php itself. In drop-in mode SCRIPT_FILENAME is the
+ * including page, so it must not be used to locate MintyMetrics' own files.
+ */
+function app_dir(): string {
+    if (\defined('MM_TESTING') && isset($GLOBALS['_mm_app_dir'])) {
+        return $GLOBALS['_mm_app_dir'];
+    }
+    return \dirname(\realpath(__FILE__) ?: __FILE__);
+}
+
+/**
+ * Path of the marker file that records where this install's database lives.
+ */
+function db_marker_path(): string {
+    return app_dir() . '/.mm_db_marker.php';
+}
+
+/**
+ * Read the marker. Format: PHP deny prefix, then the DB suffix, then (since v1.2)
+ * the absolute DB path on its own line. Returns [suffix, path|null] or null.
+ */
+function read_db_marker(): ?array {
+    $markerFile = db_marker_path();
+    $legacyMarker = app_dir() . '/.mm_db_marker';
+    if (\is_file($markerFile)) {
+        $h = @\fopen($markerFile, 'r');
+        if (!$h) {
+            throw new \RuntimeException('Cannot read ' . $markerFile);
+        }
+        \flock($h, LOCK_SH); // never observe a marker mid-write
+        $raw = (string) \stream_get_contents($h);
+        \flock($h, LOCK_UN);
+        \fclose($h);
+        if (\trim($raw) === '' && \is_file($legacyMarker)) {
+            $raw = (string) \file_get_contents($legacyMarker);
+        }
+    } elseif (\is_file($legacyMarker)) {
+        $raw = (string) \file_get_contents($legacyMarker);
+    } else {
+        return null;
+    }
+    return parse_db_marker($raw);
+}
+
+/**
+ * Parse marker contents. Empty means "not created yet" (null); anything else that
+ * does not parse is an error — guessing would risk switching to a different database.
+ */
+function parse_db_marker(string $raw): ?array {
+    // Only a completely empty file means "not created yet". A file holding just the
+    // PHP prefix is a truncated marker and must not be mistaken for a fresh install.
+    if (\trim($raw) === '') {
+        return null;
+    }
+    // Strip PHP deny prefix if present
+    $body = \trim(\preg_replace('/^<\?php\s+\S+\s*/', '', $raw));
+    $lines = \preg_split('/\R/', $body);
+    $suffix = \trim($lines[0] ?? '');
+    if (!\preg_match('/^[a-f0-9]{8,64}$/', $suffix)) {
+        throw new \RuntimeException('Unrecognized contents in ' . db_marker_path());
+    }
+    $path = \trim($lines[1] ?? '');
+    return [$suffix, $path !== '' ? $path : null];
+}
+
+/**
+ * Marker file contents for a suffix and resolved database path.
+ */
+function db_marker_contents(string $suffix, string $path): string {
+    return "<?php __HALT_COMPILER();\n{$suffix}\n{$path}\n";
+}
+
+/**
+ * Write the marker with the resolved database path (used by tests and tooling;
+ * normal resolution writes it under the lock in resolve_db_path()).
+ */
+function write_db_marker(string $suffix, string $path): bool {
+    $ok = @\file_put_contents(db_marker_path(), db_marker_contents($suffix, $path), LOCK_EX) !== false;
+    if ($ok && \file_exists(app_dir() . '/.mm_db_marker')) {
+        @\unlink(app_dir() . '/.mm_db_marker');
+    }
+    return $ok;
 }
 
 /**
  * Get the path to the SQLite database file.
- * Tries to store outside web root; falls back to same directory.
+ *
+ * The location is decided once, when the database is first created, and stored in
+ * the marker. Later requests always reuse it: re-deciding per request (e.g. after a
+ * permissions change) would silently start a new, empty database and reopen setup.
  */
 function get_db_path(): string {
-    static $path = null;
-    if ($path !== null) {
-        return $path;
+    static $paths = [];
+    $dir = app_dir();
+    if (isset($paths[$dir])) {
+        return $paths[$dir];
+    }
+    return $paths[$dir] = resolve_db_path();
+}
+
+/**
+ * Work out (and pin in the marker) where this install's database lives.
+ */
+function resolve_db_path(): string {
+    // Fast path: an already pinned marker only needs a shared-locked read
+    $marker = read_db_marker();
+    if ($marker !== null && $marker[1] !== null) {
+        return $marker[1];
     }
 
-    $scriptDir = \dirname(\realpath($_SERVER['SCRIPT_FILENAME'] ?? __FILE__));
-    $suffix = null;
-
-    // Try to read existing suffix from a marker file (.php to prevent direct web access)
-    $markerFile = $scriptDir . '/.mm_db_marker.php';
-    $legacyMarker = $scriptDir . '/.mm_db_marker';
-    if (\file_exists($markerFile)) {
-        $raw = \file_get_contents($markerFile);
-        // Strip PHP deny prefix if present
-        $suffix = \trim(\preg_replace('/^<\?php\s+\S+\s*/', '', $raw));
-    } elseif (\file_exists($legacyMarker)) {
-        // Migrate legacy plain-text marker
-        $suffix = \trim(\file_get_contents($legacyMarker));
-        @\file_put_contents($markerFile, "<?php __HALT_COMPILER();\n" . $suffix);
-        @\unlink($legacyMarker);
-    }
-
-    if (!$suffix) {
-        $suffix = \bin2hex(\random_bytes(8)); // 16-char hex
-        @\file_put_contents($markerFile, "<?php __HALT_COMPILER();\n" . $suffix);
-    }
-
-    $filename = "mintymetrics-{$suffix}.sqlite";
-
-    // Try one directory above web root
-    $parentDir = \dirname($scriptDir);
-    $parentPath = $parentDir . '/' . $filename;
-    if (\file_exists($parentPath) && \is_writable($parentPath)) {
-        $path = $parentPath;
-        return $path;
-    }
-    if (\is_writable($parentDir) && !\file_exists($parentPath)) {
-        if (@\touch($parentPath)) {
-            $path = $parentPath;
-            return $path;
+    // Creating or pinning the marker happens under an exclusive lock, so concurrent
+    // first requests agree on one database instead of each inventing their own.
+    $markerFile = db_marker_path();
+    $h = @\fopen($markerFile, 'c+');
+    if (!$h) {
+        // A read-only legacy marker can still be resolved, but only to the single existing
+        // database: with copies in both locations the choice could change between requests
+        $existing = $marker !== null ? legacy_db_candidates($marker[0]) : [];
+        $legacy = \count($existing) === 1 ? $existing[0] : null;
+        if ($legacy !== null) {
+            \error_log("MintyMetrics: cannot update {$markerFile}; using existing database {$legacy}");
+            return $legacy;
         }
+        throw new \RuntimeException('Cannot write ' . $markerFile . '; make the folder writable by the web server.');
     }
 
-    // Fall back to same directory
-    $path = $scriptDir . '/' . $filename;
-    return $path;
+    try {
+        \flock($h, LOCK_EX);
+        $raw = (string) \stream_get_contents($h);
+        $legacyMarker = app_dir() . '/.mm_db_marker';
+        if (\trim($raw) === '' && \is_file($legacyMarker)) {
+            $raw = (string) \file_get_contents($legacyMarker);
+        }
+        $marker = parse_db_marker($raw);
+        if ($marker !== null && $marker[1] !== null) {
+            return $marker[1]; // pinned by another request while we waited
+        }
+
+        if ($marker !== null) {
+            // Pre-1.2 marker: keep using the existing database, wherever it is
+            $suffix = $marker[0];
+            $path = legacy_db_location($suffix) ?? choose_db_location("mintymetrics-{$suffix}.sqlite");
+        } else {
+            $suffix = \bin2hex(\random_bytes(8)); // 16-char hex
+            $path = choose_db_location("mintymetrics-{$suffix}.sqlite");
+        }
+
+        $contents = db_marker_contents($suffix, $path);
+        \ftruncate($h, 0);
+        \rewind($h);
+        if (\fwrite($h, $contents) !== \strlen($contents) || !\fflush($h)) {
+            throw new \RuntimeException('Cannot write ' . $markerFile . '; make the folder writable by the web server.');
+        }
+        if (\is_file($legacyMarker)) {
+            @\unlink($legacyMarker);
+        }
+        return $path;
+    } finally {
+        \flock($h, LOCK_UN);
+        \fclose($h);
+    }
+}
+
+/**
+ * Where a pre-1.2 install's database is: one directory up or next to analytics.php
+ * (the larger file wins if, unusually, both exist). Null if neither exists.
+ */
+function legacy_db_location(string $suffix): ?string {
+    $existing = legacy_db_candidates($suffix);
+    \usort($existing, fn($a, $b) => \filesize($b) <=> \filesize($a));
+    return $existing[0] ?? null;
+}
+
+/**
+ * Existing database files for a pre-1.2 suffix (one directory up, then next to analytics.php).
+ */
+function legacy_db_candidates(string $suffix): array {
+    $filename = "mintymetrics-{$suffix}.sqlite";
+    return \array_values(\array_filter(
+        [\dirname(app_dir()) . '/' . $filename, app_dir() . '/' . $filename],
+        'is_file'
+    ));
+}
+
+/**
+ * Pick where a new database goes: one directory up when that is writable and
+ * outside the web root, otherwise next to analytics.php (protected by .htaccess).
+ */
+function choose_db_location(string $filename): string {
+    $parentDir = \dirname(app_dir());
+    if (\is_writable($parentDir) && !path_in_docroot($parentDir)) {
+        return $parentDir . '/' . $filename;
+    }
+    return app_dir() . '/' . $filename;
+}
+
+/**
+ * Whether a path is inside the web server's document root (i.e. potentially downloadable).
+ * When DOCUMENT_ROOT is unknown, anything inside the app directory counts as web-served.
+ */
+function path_in_docroot(string $path): bool {
+    $norm = fn(string $p) => \rtrim(\str_replace('\\', '/', $p), '/') . '/';
+    $real = \realpath($path) ?: $path;
+    $docRoot = \realpath($_SERVER['DOCUMENT_ROOT'] ?? '') ?: '';
+    $root = $docRoot !== '' ? $docRoot : app_dir();
+    return \str_starts_with($norm($real), $norm($root));
 }
 
 /**
@@ -224,26 +388,23 @@ function get_salt(): string {
  * Returns true if a database has been initialised at some point.
  */
 function db_marker_exists(): bool {
-    $scriptDir = \dirname(\realpath($_SERVER['SCRIPT_FILENAME'] ?? __FILE__));
-    return \file_exists($scriptDir . '/.mm_db_marker.php')
-        || \file_exists($scriptDir . '/.mm_db_marker');
+    return \file_exists(db_marker_path()) || \file_exists(app_dir() . '/.mm_db_marker');
 }
 
 /**
  * Check if setup has been completed.
  * If no DB marker file exists, setup has never run — return false
  * without creating any files on disk.
+ *
+ * Database errors are thrown, not treated as "not set up": falling back to the
+ * setup page on a configured install would let anyone overwrite the password.
  */
 function setup_complete(): bool {
     if (!db_marker_exists()) {
         return false;
     }
-    try {
-        db_init();
-        return get_config('setup_complete', '0') === '1';
-    } catch (\Throwable $e) {
-        return false;
-    }
+    $value = db()->querySingle("SELECT value FROM settings WHERE key = 'setup_complete'");
+    return $value === '1';
 }
 
 /**
@@ -266,9 +427,25 @@ function normalize_domain(string $value): string {
         return '';
     }
 
-    // parse_url() retains brackets around IPv6 hosts.
-    $host = \trim(\strtolower($host), '[]');
-    $host = \preg_replace('/[^a-z0-9.\-:]/', '', $host);
+    // parse_url() retains brackets around IPv6 hosts; a trailing dot is the DNS root.
+    $host = \rtrim(\trim(\mb_strtolower($host), '[]'), '.');
+
+    // Internationalized names become punycode. Stripping non-ASCII characters instead
+    // would turn bücher.de into bcher.de and match an unrelated domain.
+    if (\preg_match('/[^\x20-\x7e]/', $host)) {
+        if (!\function_exists('idn_to_ascii')) {
+            return '';
+        }
+        $ascii = \idn_to_ascii($host, IDNA_DEFAULT, INTL_IDNA_VARIANT_UTS46);
+        if (!\is_string($ascii) || $ascii === '') {
+            return '';
+        }
+        $host = \strtolower($ascii);
+    }
+
+    if (!\preg_match('/^[a-z0-9.\-:]+$/', $host)) {
+        return '';
+    }
     return truncate($host, MAX_SITE_DOMAIN);
 }
 

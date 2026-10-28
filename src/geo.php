@@ -143,7 +143,7 @@ function geo_available(): bool {
  * Get the path to the IP2Location BIN file.
  */
 function geo_db_path(): ?string {
-    $dir = \dirname(\realpath($_SERVER['SCRIPT_FILENAME'] ?? __FILE__));
+    $dir = app_dir();
     $candidates = [
         $dir . '/IP2LOCATION-LITE-DB1.BIN',
         $dir . '/IP2LOCATION-LITE-DB1.IPV6.BIN',

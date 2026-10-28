@@ -25,7 +25,28 @@ class ConfigHelpersTest extends TestCase
             'Bare public IPv6' => ['2001:db8::1', '2001:db8::1'],
             'Whitespace' => ['  localhost:8888  ', 'localhost'],
             'Empty value' => ['', ''],
+            'Trailing dot' => ['Example.com.', 'example.com'],
+            'Invalid characters are rejected, not stripped' => ['exa$mple.com', ''],
         ];
+    }
+
+    public function testInternationalDomainsBecomePunycodeOrAreRejected(): void
+    {
+        $result = \MintyMetrics\normalize_domain('bücher.de');
+        if (function_exists('idn_to_ascii')) {
+            $this->assertSame('xn--bcher-kva.de', $result);
+        } else {
+            $this->assertSame('', $result, 'Without intl, never strip to a different ASCII domain');
+        }
+        $this->assertNotSame('bcher.de', $result);
+    }
+
+    public function testDomainListAcceptsCommasAndNewlines(): void
+    {
+        $this->assertSame(
+            ['a.com', 'b.com', 'c.com'],
+            \MintyMetrics\parse_domain_list("a.com, b.com\nC.com.\n\n a.com")
+        );
     }
 
     public function testDomainMatchesLegacyPortBearingAllowlistEntry(): void

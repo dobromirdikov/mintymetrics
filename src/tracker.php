@@ -320,10 +320,19 @@ function get_tracker_js(string $endpoint, string $site): string {
 /* {{TRACKER_JS}} */
 TRACKER_JS;
 
-    $js = \str_replace('{{ENDPOINT}}', $endpoint, $js);
-    $js = \str_replace('{{SITE}}', \addslashes($site), $js);
-    $js = \str_replace('{{RESPECT_DNT}}', get_config('respect_dnt', '1'), $js);
+    $js = \str_replace('{{ENDPOINT}}', js_string($endpoint), $js);
+    $js = \str_replace('{{SITE}}', js_string($site), $js);
+    $js = \str_replace('{{RESPECT_DNT}}', get_config('respect_dnt', '1') === '1' ? '1' : '0', $js);
     return $js;
+}
+
+/**
+ * Escape a value for use inside a single-quoted JS string literal that may sit in an
+ * inline <script> (quotes, backslashes, < > & and line terminators are all escaped).
+ */
+function js_string(string $value): string {
+    $json = \json_encode($value, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_INVALID_UTF8_SUBSTITUTE);
+    return \substr((string) $json, 1, -1);
 }
 
 /**
@@ -338,10 +347,19 @@ function get_tracker_js_inline(string $endpoint, string $site): string {
  * Outputs a <script> tag that handles client-side tracking.
  */
 function head(string $nonce = ''): void {
-    $site = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    $endpoint = script_url();
-    $js = get_tracker_js_inline($endpoint, $site);
-    $attr = $nonce ? ' nonce="' . $nonce . '"' : '';
+    // Never let analytics break the host page
+    try {
+        // Before setup there is nothing to track into, and no files may be created
+        if (!db_marker_exists()) {
+            return;
+        }
+        $site = sanitize_site($_SERVER['HTTP_HOST'] ?? '') ?: 'localhost';
+        $js = get_tracker_js_inline(script_url(), $site);
+    } catch (\Throwable $e) {
+        \error_log('MintyMetrics head(): ' . $e->getMessage());
+        return;
+    }
+    $attr = $nonce !== '' ? ' nonce="' . e($nonce) . '"' : '';
     echo "<script{$attr}>" . $js . '</script>';
 }
 

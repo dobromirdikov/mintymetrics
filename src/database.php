@@ -1,7 +1,7 @@
 <?php
 namespace MintyMetrics;
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 /**
  * Get the singleton SQLite3 database connection.
@@ -103,6 +103,7 @@ function db_init_with(\SQLite3 $db): void {
         1 => 'db_migrate_v2',
         2 => 'db_migrate_v3',
         3 => 'db_migrate_v4',
+        4 => 'db_migrate_v5',
     ];
     foreach ($migrations as $fromVersion => $migration) {
         if ($schemaVersion !== $fromVersion) {
@@ -245,6 +246,7 @@ function db_create_schema(\SQLite3 $db): void {
 
     // Custom events (pruned with same retention as hits)
     db_create_events_table($db);
+    db_create_login_attempts_table($db);
 
     $db->exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '" . SCHEMA_VERSION . "')");
 
@@ -293,6 +295,20 @@ function db_table_columns(\SQLite3 $db, string $table): array {
     return $columns;
 }
 
+/**
+ * Per-client login throttling (keyed by an HMAC of the client IP, never the raw IP).
+ */
+function db_create_login_attempts_table(\SQLite3 $db): void {
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            client_key   TEXT PRIMARY KEY,
+            failures     INTEGER NOT NULL DEFAULT 0,
+            window_start INTEGER NOT NULL,
+            locked_until INTEGER NOT NULL DEFAULT 0
+        )
+    ");
+}
+
 /** Migration v1 → v2: beacon activity column. */
 function db_migrate_v2(\SQLite3 $db): void {
     if (!\in_array('last_active_at', db_table_columns($db, 'hits'), true)) {
@@ -331,6 +347,11 @@ function db_migrate_v4(\SQLite3 $db): void {
             time_count   = CASE WHEN avg_time_on_page IS NULL THEN 0 ELSE pageviews END
     ");
     $db->exec('CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)');
+}
+
+/** Migration v4 → v5: per-client login throttling. */
+function db_migrate_v5(\SQLite3 $db): void {
+    db_create_login_attempts_table($db);
 }
 
 /**

@@ -17,8 +17,12 @@ function render_settings(string $message = '', string $messageType = 'success'):
     $maxDbSize = get_config('max_db_size_mb', MAX_DB_SIZE_MB);
     $respectDnt = get_config('respect_dnt', '1');
     $enableGeo = get_config('enable_geo', '1');
+    $timezone = (string) get_config('timezone', '');
+    if (!is_valid_timezone($timezone)) {
+        $timezone = \date_default_timezone_get();
+    }
     $geoInstalled = geo_available();
-    $scriptUrl = e(script_url());
+    $scriptUrl = e(script_path());
 
     $msgHtml = '';
     if ($message) {
@@ -65,7 +69,8 @@ function render_settings(string $message = '', string $messageType = 'success'):
             font-size: 1rem; font-family: inherit; background: #F4F7F6; }
         input:focus, textarea:focus, select:focus { outline: none; border-color: #2AB090; box-shadow: 0 0 0 3px rgba(42,176,144,0.15); }
         textarea { resize: vertical; min-height: 80px; }
-        .hint { color: #8FA39A; font-size: 0.8125rem; margin-top: 4px; }
+        .hint { color: #5A6F66; font-size: 0.8125rem; margin-top: 4px; }
+        .mm-hint-spaced { margin-bottom: 12px; }
         .mm-check-row { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
         .mm-check-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: #2AB090; }
         .mm-check-row label { margin: 0; font-weight: normal; }
@@ -96,6 +101,8 @@ function render_settings(string $message = '', string $messageType = 'success'):
         <a href="' . $scriptUrl . '" class="mm-back">&larr; Back to Dashboard</a>
         <h1>Settings</h1>';
     } else {
+        // Fragment carries CSRF tokens: never cache it
+        \header('Cache-Control: no-store');
         echo '<div class="mm-settings">';
     }
 
@@ -119,7 +126,7 @@ function render_settings(string $message = '', string $messageType = 'success'):
                         <h2>Tracking</h2>
                         <label for="domains">Allowed Domains</label>
                         <textarea form="mmSettingsForm" id="domains" name="domains" placeholder="example.com">' . e($domains) . '</textarea>
-                        <div class="hint">One domain per line. Hub mode tracks multiple sites from one dashboard.</div>
+                        <div class="hint">One domain per line (or comma-separated). Subdomains are included. At least one is required.</div>
                         <div class="mm-check-row">
                             <input form="mmSettingsForm" type="checkbox" id="respect_dnt" name="respect_dnt" value="1"' . ($respectDnt === '1' ? ' checked' : '') . '>
                             <label for="respect_dnt">Respect Do Not Track / Global Privacy Control</label>
@@ -145,7 +152,7 @@ function render_settings(string $message = '', string $messageType = 'success'):
 
                     <div class="mm-section">
                         <h2>Install Geo Database</h2>
-                        <div class="hint" style="margin-bottom:12px">Country detection requires the free <a href="https://lite.ip2location.com/database/db1-ip-country" target="_blank" rel="noopener">IP2Location LITE DB1</a> database.</div>
+                        <div class="hint mm-hint-spaced">Country detection requires the free <a href="https://lite.ip2location.com/database/db1-ip-country" target="_blank" rel="noopener">IP2Location LITE DB1</a> database.</div>
 
                         <div class="mm-geo-option">
                             <strong>Option 1:</strong> Auto-download with token
@@ -184,6 +191,9 @@ function render_settings(string $message = '', string $messageType = 'success'):
                         <label for="live_visitor_minutes">Live visitor window (minutes)</label>
                         <input form="mmSettingsForm" type="number" id="live_visitor_minutes" name="live_visitor_minutes" value="' . e((string) get_config('live_visitor_minutes', (string) LIVE_VISITOR_MINUTES)) . '" min="1" max="30">
                         <div class="hint">Time window for counting active visitors on the dashboard. Default: 5 minutes.</div>
+                        <label for="timezone">Timezone</label>
+                        <select form="mmSettingsForm" id="timezone" name="timezone">' . timezone_options($timezone) . '</select>
+                        <div class="hint">Days in charts and daily summaries start at midnight in this timezone.</div>
                     </div>
                 </div>
             </div>
@@ -215,6 +225,17 @@ function render_settings(string $message = '', string $messageType = 'success'):
 }
 
 /**
+ * <option> list of all timezone identifiers with the current one selected.
+ */
+function timezone_options(string $selected): string {
+    $html = '';
+    foreach (\DateTimeZone::listIdentifiers() as $tz) {
+        $html .= '<option value="' . e($tz) . '"' . ($tz === $selected ? ' selected' : '') . '>' . e(\str_replace('_', ' ', $tz)) . '</option>';
+    }
+    return $html;
+}
+
+/**
  * Handle settings form POST.
  * Returns JSON for AJAX requests, re-renders page for standard form submissions.
  */
@@ -233,29 +254,54 @@ function handle_settings(): void {
         $newPw = $_POST['new_password'] ?? '';
         $confirmPw = $_POST['new_password_confirm'] ?? '';
 
-        if (!auth_verify_password($currentPw)) {
+        // Wrong current passwords count towards the same limits as the login form
+        if (!auth_reserve_attempt()) {
+            $message = 'Too many incorrect attempts. Try again later.';
+            $messageType = 'error';
+        } elseif (!auth_verify_password($currentPw)) {
             $message = 'Current password is incorrect.';
             $messageType = 'error';
-        } elseif (\strlen($newPw) < 8) {
-            $message = 'New password must be at least 8 characters.';
-            $messageType = 'error';
-        } elseif ($newPw !== $confirmPw) {
-            $message = 'New passwords do not match.';
-            $messageType = 'error';
         } else {
-            auth_set_password($newPw);
-            $message = 'Password updated successfully.';
+            auth_release_attempt();
+            if (\strlen($newPw) < 8) {
+                $message = 'New password must be at least 8 characters.';
+                $messageType = 'error';
+            } elseif ($newPw !== $confirmPw) {
+                $message = 'New passwords do not match.';
+                $messageType = 'error';
+            } else {
+                // Other sessions are now signed out; keep this one signed in, under a new ID,
+                // pinned to exactly the hash written here (a concurrent reset wins)
+                auth_establish_session(auth_set_password($newPw));
+                $message = 'Password updated. Other sessions have been signed out.';
+            }
         }
     } else {
         // General settings
+        $domains = parse_domain_list($_POST['domains'] ?? '');
+        if (empty($domains)) {
+            // An empty allow-list would accept hits for any site and open CORS to everyone
+            $message = 'Add at least one allowed domain. Settings were not saved.';
+            $messageType = 'error';
+        }
+        $timezone = $_POST['timezone'] ?? '';
+        if ($messageType === 'success' && $timezone !== '' && !is_valid_timezone($timezone)) {
+            $message = 'Unknown timezone. Settings were not saved.';
+            $messageType = 'error';
+        }
+    }
+
+    if ($action !== 'change_password' && $messageType === 'success') {
         $title = \trim($_POST['dashboard_title'] ?? DASHBOARD_TITLE);
         if ($title === '') {
             $title = DASHBOARD_TITLE;
         }
         set_config('dashboard_title', truncate($title, 50));
 
-        $domains = normalize_domains(\array_map('trim', \explode("\n", $_POST['domains'] ?? '')));
         set_config('allowed_domains', \json_encode(\array_values($domains)));
+        if ($timezone !== '') {
+            set_config('timezone', $timezone);
+        }
 
         set_config('respect_dnt', isset($_POST['respect_dnt']) ? '1' : '0');
         set_config('enable_geo', isset($_POST['enable_geo']) ? '1' : '0');
@@ -273,6 +319,9 @@ function handle_settings(): void {
     }
 
     if ($isAjax) {
+        if ($messageType !== 'success') {
+            \http_response_code(422);
+        }
         \header('Content-Type: application/json');
         echo \json_encode(['success' => $messageType === 'success', 'message' => $message]);
         return;

@@ -33,6 +33,7 @@ echo "Building MintyMetrics v{$version}...\n";
 // Module inclusion order (dependencies flow top-down)
 $modules = [
     'config',
+    'http',
     'database',
     'auth',
     'useragent',
@@ -81,30 +82,44 @@ foreach ($modules as $mod) {
     echo "  + {$mod}.php\n";
 }
 
-// Inline assets
+// Replace version placeholder (before inlining assets, so asset contents are left untouched)
+if (!preg_match('/^[0-9A-Za-z.+\-]+$/', $version)) {
+    fwrite(STDERR, "ERROR: Invalid version string: {$version}\n");
+    exit(1);
+}
+$output = str_replace('{{VERSION}}', $version, $output);
+
+// Inline assets. Each one lands inside a PHP string: nowdoc bodies for CSS/JS, a
+// single-quoted echo for the SVG. Content that would terminate that string early
+// must fail the build instead of producing a broken analytics.php.
 $assets = [
-    '/* {{CSS}} */'        => $srcDir . '/assets/style.css',
-    '/* {{JS}} */'         => $srcDir . '/assets/dashboard.js',
-    '/* {{TRACKER_JS}} */' => $srcDir . '/assets/tracker.js',
-    '/* {{SVG_MAP}} */'    => $srcDir . '/assets/worldmap.svg',
+    '/* {{CSS}} */'        => [$srcDir . '/assets/style.css', 'nowdoc', 'CSSBLOCK'],
+    '/* {{JS}} */'         => [$srcDir . '/assets/dashboard.js', 'nowdoc', 'JSBLOCK'],
+    '/* {{TRACKER_JS}} */' => [$srcDir . '/assets/tracker.js', 'nowdoc', 'TRACKER_JS'],
+    '/* {{SVG_MAP}} */'    => [$srcDir . '/assets/worldmap.svg', 'single-quoted', null],
 ];
 
-foreach ($assets as $marker => $assetFile) {
+foreach ($assets as $marker => [$assetFile, $context, $terminator]) {
     if (!file_exists($assetFile)) {
         fwrite(STDERR, "ERROR: {$assetFile} not found\n");
         exit(1);
     }
-    if (strpos($output, $marker) === false) {
-        fwrite(STDERR, "ERROR: Asset marker '{$marker}' not found\n");
+    if (substr_count($output, $marker) !== 1) {
+        fwrite(STDERR, "ERROR: Asset marker '{$marker}' must appear exactly once\n");
         exit(1);
     }
     $content = file_get_contents($assetFile);
+    if ($context === 'nowdoc' && preg_match('/^\s*' . preg_quote($terminator, '/') . '\b/m', $content)) {
+        fwrite(STDERR, "ERROR: " . basename($assetFile) . " contains a line starting with {$terminator}, which would end its nowdoc\n");
+        exit(1);
+    }
+    if ($context === 'single-quoted' && preg_match("/['\\\\]/", $content)) {
+        fwrite(STDERR, "ERROR: " . basename($assetFile) . " contains ' or \\, which would break its single-quoted string\n");
+        exit(1);
+    }
     $output = str_replace($marker, $content, $output);
     echo "  + " . basename($assetFile) . "\n";
 }
-
-// Replace version placeholder
-$output = str_replace('{{VERSION}}', $version, $output);
 
 // Validate no unreplaced markers remain
 if (preg_match('/\{\{(?:INCLUDE:|VERSION)[^}]*\}\}/', $output, $matches)) {
@@ -112,28 +127,29 @@ if (preg_match('/\{\{(?:INCLUDE:|VERSION)[^}]*\}\}/', $output, $matches)) {
     exit(1);
 }
 
-// Write output
-file_put_contents($outFile, $output);
+// Write to a temporary file and only replace analytics.php once every check passes,
+// so a failed build never leaves a broken analytics.php behind.
+$tmpFile = $outFile . '.tmp';
+file_put_contents($tmpFile, $output);
 
-// Report
-$size = filesize($outFile);
-$lines = count(file($outFile));
-$sizeKB = round($size / 1024, 1);
-echo "\nBuilt: analytics.php ({$sizeKB} KB, {$lines} lines)\n";
+$fail = function (string $message) use ($tmpFile): void {
+    @unlink($tmpFile);
+    fwrite(STDERR, "ERROR: {$message}\n");
+    exit(1);
+};
 
-// Syntax check
+// Syntax check with the same PHP binary that runs this build
 echo "Running syntax check...\n";
 $syntaxOutput = [];
 $syntaxReturn = 0;
-exec('php -l ' . escapeshellarg($outFile) . ' 2>&1', $syntaxOutput, $syntaxReturn);
+exec(escapeshellarg(PHP_BINARY) . ' -l ' . escapeshellarg($tmpFile) . ' 2>&1', $syntaxOutput, $syntaxReturn);
 if ($syntaxReturn !== 0) {
-    fwrite(STDERR, "ERROR: Syntax check failed:\n" . implode("\n", $syntaxOutput) . "\n");
-    exit(1);
+    $fail("Syntax check failed:\n" . implode("\n", $syntaxOutput));
 }
 echo "Syntax check passed.\n";
 
 // Verify key function definitions exist
-$expectedFunctions = ['db', 'track_hit', 'track_event', 'auth_check', 'render_dashboard', 'export_csv'];
+$expectedFunctions = ['db', 'track_hit', 'track_event', 'auth_check', 'render_dashboard', 'export_csv', 'handle_api', 'cleanup_run', 'head'];
 $missingFunctions = [];
 foreach ($expectedFunctions as $fn) {
     if (strpos($output, "function {$fn}(") === false) {
@@ -141,7 +157,16 @@ foreach ($expectedFunctions as $fn) {
     }
 }
 if (!empty($missingFunctions)) {
-    fwrite(STDERR, "WARNING: Missing function definitions: " . implode(', ', $missingFunctions) . "\n");
+    $fail('Missing function definitions: ' . implode(', ', $missingFunctions));
 }
 
+if (!rename($tmpFile, $outFile)) {
+    $fail("Could not write {$outFile}");
+}
+
+// Report
+$size = filesize($outFile);
+$lines = count(file($outFile));
+$sizeKB = round($size / 1024, 1);
+echo "\nBuilt: analytics.php ({$sizeKB} KB, {$lines} lines)\n";
 echo "Build complete.\n";

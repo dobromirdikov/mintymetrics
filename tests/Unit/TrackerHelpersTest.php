@@ -188,7 +188,7 @@ class TrackerHelpersTest extends TestCase
             'Uppercase' => ['Example.COM', 'example.com'],
             'With spaces' => ['  example.com  ', 'example.com'],
             'With subdomain' => ['blog.example.com', 'blog.example.com'],
-            'Special characters removed' => ['example<script>.com', 'examplescript.com'],
+            'Invalid hostname rejected' => ['example<script>.com', ''],
             'Only allowed chars' => ['my-site.example.com', 'my-site.example.com'],
             'With port notation stripped' => ['example.com:8080', 'example.com'],
             'Localhost with MAMP port' => ['localhost:8888', 'localhost'],

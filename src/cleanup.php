@@ -41,6 +41,12 @@ function cleanup_run(): void {
         $stmt->bindValue(':cutoff', \microtime(true) - 60, SQLITE3_FLOAT);
         $stmt->execute();
 
+        // Prune expired login throttling rows
+        $stmt = $db->prepare('DELETE FROM login_attempts WHERE window_start < :old AND locked_until < :now');
+        $stmt->bindValue(':old', \time() - LOGIN_LOCKOUT_MINUTES * 60, SQLITE3_INTEGER);
+        $stmt->bindValue(':now', \time(), SQLITE3_INTEGER);
+        $stmt->execute();
+
         // Prune old logs
         $stmt = $db->prepare('DELETE FROM mm_logs WHERE id NOT IN (SELECT id FROM mm_logs ORDER BY id DESC LIMIT :lim)');
         $stmt->bindValue(':lim', LOG_MAX_ENTRIES, SQLITE3_INTEGER);

@@ -20,6 +20,7 @@ $srcDir = dirname(__DIR__) . '/src';
 
 $modules = [
     'config',
+    'http',
     'database',
     'auth',
     'useragent',

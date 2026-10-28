@@ -9,6 +9,7 @@
 namespace MintyMetrics;
 
 // {{INCLUDE:config}}
+// {{INCLUDE:http}}
 // {{INCLUDE:database}}
 // {{INCLUDE:auth}}
 // {{INCLUDE:useragent}}
@@ -23,17 +24,18 @@ namespace MintyMetrics;
 
 const VERSION = '{{VERSION}}';
 
-// ─── CLI Mode ───────────────────────────────────────────────────────────────
-if (\php_sapi_name() === 'cli') {
-    handle_cli($argv ?? []);
-    return;
-}
-
 // ─── Drop-in Mode Detection ────────────────────────────────────────────────
-// If this file is included by another PHP script, operate in tracking-helper mode only.
+// If this file is included by another PHP script (web or CLI), only provide the
+// head() helper. The host script's own CLI arguments must never reach handle_cli().
 if (\realpath(__FILE__) !== \realpath($_SERVER['SCRIPT_FILENAME'] ?? '')) {
     // Drop-in mode: provide head() function for the host page to call.
     // Tracking happens client-side via the JS snippet output by head().
+    return;
+}
+
+// ─── CLI Mode ───────────────────────────────────────────────────────────────
+if (\php_sapi_name() === 'cli') {
+    handle_cli($argv ?? []);
     return;
 }
 
@@ -88,8 +90,19 @@ if (isset($_GET['asset'])) {
 // ─── Dashboard Routes (session required) ────────────────────────────────────
 session_init();
 
-// First-run setup check
-if (!setup_complete()) {
+// First-run setup check. A configured install whose database is temporarily
+// unreachable must fail closed, never fall back to the (open) setup page.
+try {
+    $isSetUp = setup_complete();
+} catch (\Throwable $e) {
+    \error_log('MintyMetrics: database unavailable: ' . $e->getMessage());
+    \http_response_code(503);
+    \header('Content-Type: text/plain; charset=utf-8');
+    \header('Retry-After: 30');
+    echo 'MintyMetrics is temporarily unavailable. Please try again shortly.';
+    return;
+}
+if (!$isSetUp) {
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_GET['setup'])) {
         csrf_verify();
         handle_setup();
@@ -106,36 +119,32 @@ if (isset($_GET['login']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
     $password = $_POST['password'] ?? '';
     if (auth_login($password)) {
-        \session_regenerate_id(true);
+        // auth_login() already issued a fresh session ID before marking it signed in
         // Extend session to 30 days if "remember me" is checked
         if (!empty($_POST['remember_me'])) {
-            $lifetime = 30 * 24 * 60 * 60;
             $_SESSION['_mm_remember'] = true;
-            $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
-            \setcookie(\session_name(), \session_id(), [
-                'expires'  => \time() + $lifetime,
-                'path'     => '/',
-                'secure'   => $secure,
-                'httponly'  => true,
-                'samesite' => 'Strict',
-            ]);
+            set_remember_cookie();
         }
-        \header('Location: ' . script_url());
+        redirect(script_path());
         return;
     }
-    render_login('Invalid password or account locked.');
+    render_login('Invalid password, or too many attempts. Try again later.');
     return;
 }
 
 if (isset($_GET['logout']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
     auth_logout();
-    \header('Location: ' . script_url() . '?login');
+    redirect(script_path() . '?login');
     return;
 }
 
 // All remaining routes require authentication
 if (!auth_check()) {
+    // Background requests (API, modal fragments) get a status the dashboard can act on
+    if (isset($_GET['api']) || isset($_GET['modal'])) {
+        auth_require();
+    }
     render_login();
     return;
 }
@@ -222,141 +231,3 @@ if (isset($_GET['health'])) {
 // Default: dashboard
 cleanup_run();
 render_dashboard();
-
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-/**
- * Get the URL to this script (for self-referencing links and redirects).
- */
-function script_url(): string {
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $allowed = get_allowed_domains();
-    $fallback = $_SERVER['SERVER_NAME'] ?? ($allowed[0] ?? 'localhost');
-    $host = resolve_request_authority($_SERVER['HTTP_HOST'] ?? 'localhost', $allowed, $fallback);
-
-    // In drop-in mode, __FILE__ is the analytics script while SCRIPT_NAME
-    // points to the including page. Derive the URL path from DOCUMENT_ROOT.
-    $filePath = \str_replace('\\', '/', \realpath(__FILE__));
-    $docRoot = \str_replace('\\', '/', \realpath($_SERVER['DOCUMENT_ROOT'] ?? '') ?: '');
-
-    if ($docRoot !== '' && \str_starts_with($filePath, $docRoot)) {
-        $path = \substr($filePath, \strlen($docRoot));
-    } else {
-        $path = $_SERVER['SCRIPT_NAME'] ?? '/analytics.php';
-    }
-
-    return "{$scheme}://{$host}{$path}";
-}
-
-/**
- * Initialize session with hardened settings. Called only for dashboard routes.
- */
-function session_init(): void {
-    if (\session_status() === PHP_SESSION_ACTIVE) {
-        return;
-    }
-
-    $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
-
-    // Set GC lifetime to 30 days so "remember me" sessions survive server-side
-    \ini_set('session.gc_maxlifetime', 30 * 24 * 60 * 60);
-
-    // Use a dedicated session directory so system-wide GC crons
-    // and other PHP apps cannot prune our long-lived sessions.
-    $sessionDir = \dirname(get_db_path()) . '/mm_sessions';
-    if (!\is_dir($sessionDir)) {
-        @\mkdir($sessionDir, 0700, true);
-    }
-    if (\is_dir($sessionDir) && \is_writable($sessionDir)) {
-        \ini_set('session.save_path', $sessionDir);
-    }
-
-    \session_set_cookie_params([
-        'lifetime' => 0,
-        'path'     => '/',
-        'domain'   => '',
-        'secure'   => $secure,
-        'httponly'  => true,
-        'samesite' => 'Strict',
-    ]);
-
-    \session_name('mm_session');
-    \session_start();
-
-    // "Remember me" sessions: regenerate daily, then refresh the 30-day cookie
-    if (!empty($_SESSION['_mm_remember'])) {
-        $lifetime = 30 * 24 * 60 * 60;
-
-        // Regenerate session ID daily (do this BEFORE setcookie so we use the current ID)
-        if (!isset($_SESSION['_mm_created'])) {
-            $_SESSION['_mm_created'] = \time();
-        } elseif (\time() - $_SESSION['_mm_created'] > 86400) {
-            \session_regenerate_id(true);
-            $_SESSION['_mm_created'] = \time();
-        }
-
-        // Refresh the 30-day cookie with the (possibly new) session ID
-        \setcookie(\session_name(), \session_id(), [
-            'expires'  => \time() + $lifetime,
-            'path'     => '/',
-            'secure'   => $secure,
-            'httponly'  => true,
-            'samesite' => 'Strict',
-        ]);
-        return;
-    }
-
-    // Default sessions: regenerate every 30 minutes
-    if (!isset($_SESSION['_mm_created'])) {
-        $_SESSION['_mm_created'] = \time();
-    } elseif (\time() - $_SESSION['_mm_created'] > 1800) {
-        \session_regenerate_id(true);
-        $_SESSION['_mm_created'] = \time();
-    }
-}
-
-/**
- * Handle CLI commands (e.g., --reset-password).
- */
-function handle_cli(array $argv): void {
-    if (\in_array('--reset-password', $argv, true)) {
-        echo "MintyMetrics Password Reset\n";
-        echo "Enter new password (min 8 characters): ";
-        $password = \trim(\fgets(STDIN));
-        if (\strlen($password) < 8) {
-            echo "Error: Password must be at least 8 characters.\n";
-            return;
-        }
-        db_init();
-        auth_set_password($password);
-        echo "Password updated successfully.\n";
-        return;
-    }
-
-    if (\in_array('--version', $argv, true)) {
-        echo "MintyMetrics v" . VERSION . "\n";
-        return;
-    }
-
-    echo "MintyMetrics v" . VERSION . "\n\n";
-    echo "Usage:\n";
-    echo "  php " . ($argv[0] ?? 'analytics.php') . " --reset-password   Reset admin password\n";
-    echo "  php " . ($argv[0] ?? 'analytics.php') . " --version          Show version\n";
-}
-
-/**
- * Serve a static asset (lazy-loaded resources like the world map).
- */
-function serve_asset(string $name): void {
-    switch ($name) {
-        case 'worldmap':
-            \header('Content-Type: image/svg+xml');
-            \header('Cache-Control: public, max-age=86400');
-            echo '/* {{SVG_MAP}} */';
-            return;
-        default:
-            \http_response_code(404);
-            return;
-    }
-}

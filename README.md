@@ -49,12 +49,12 @@ For a single site — analytics and dashboard served from the same domain.
 
 1. Upload `analytics.php` to your web root
 2. Visit `https://yoursite.com/analytics.php` in your browser
-3. Set an admin password and configure your domain
+3. Enter the setup token, set an admin password and configure your domain. The token is in `.mm_setup_token.php`, created next to `analytics.php` on your first visit — open it via FTP or your host's file manager and copy the code from its last line. This stops anyone else from claiming a freshly uploaded install.
 4. Add this to your pages:
    ```php
    <?php
    // At the very top of the file, before any output:
-   include 'analytics.php';
+   include_once 'analytics.php';
    ?>
    ...
    <head>
@@ -62,14 +62,14 @@ For a single site — analytics and dashboard served from the same domain.
    </head>
    ```
 
-The `include` loads MintyMetrics. The `head()` call outputs the tracking JavaScript.
+The `include_once` loads MintyMetrics (a second plain `include` in the same request would fail with "cannot redeclare"). The `head()` call outputs the tracking JavaScript.
 
 ### Hub Mode
 
 Track multiple sites from one central dashboard.
 
 1. Host `analytics.php` on a central domain (e.g., `stats.yourdomain.com`)
-2. Visit the dashboard, configure your allowed domains
+2. Visit the dashboard, enter the setup token (see Drop-in Mode), and configure your allowed domains
 3. Add to each site's `<head>`:
    ```html
    <script defer src="https://stats.yourdomain.com/analytics.php?js&site=myproject.com"></script>
@@ -187,7 +187,7 @@ Tests require PHP 8.1+ and the SQLite3 extension. The test suite uses temporary 
 - **No cookies** — session-based dashboard auth only; visitors are never cookied
 - **Password hashing** — bcrypt via `password_hash()`
 - **CSRF protection** — all state-changing POST endpoints require a valid token
-- **Rate limiting** — login lockout after 5 failed attempts (15 min); hit rate limiting per IP
+- **Rate limiting** — after 5 failed logins a client is locked out for 15 minutes (other clients are unaffected), plus a global limit against distributed guessing; changing the password signs out all other sessions
 - **CSP headers** — nonce-based Content Security Policy on all dashboard pages
 - **Database protection** — randomized SQLite filename; `.htaccess` auto-generated to block direct access
 - **Input validation** — all user input truncated and sanitized; prepared statements throughout
@@ -199,33 +199,33 @@ MintyMetrics creates the SQLite database with a randomized filename and attempts
 
 The **Health** panel in the dashboard shows whether your database is outside the web root or protected by server rules.
 
-**Apache / LiteSpeed** — `.htaccess` rules are auto-generated to block direct access to `.sqlite`, `.sqlite-wal`, `.sqlite-shm`, and `.mm_db_marker.php` files.
+"One directory above" is only used when that directory is outside `DOCUMENT_ROOT`. Once created, the database location is recorded in `.mm_db_marker.php` and never changes, even if folder permissions change later.
 
-**Nginx** — add these rules to your server block:
+**Apache / LiteSpeed** — `.htaccess` rules are auto-generated next to `analytics.php` to block direct access to the database and its `-wal`, `-shm` and `-journal` files, `.mm_db_marker.php` and `.mm_setup_token.php`. If you upgraded from an older version, the Health panel offers to update the rules.
+
+**Nginx** — add this rule to your server block:
 ```nginx
-location ~* \.(sqlite|sqlite-wal|sqlite-shm)$ {
-    deny all;
-}
-location ~* \.mm_db_marker\.php$ {
+location ~* (mintymetrics-[0-9a-f]+\.sqlite(-wal|-shm|-journal)?|\.mm_db_marker(\.php)?|\.mm_setup_token\.php)$ {
     deny all;
 }
 ```
 
 **Caddy** — add a respond matcher:
 ```
-@blocked path_regexp \.(sqlite|sqlite-wal|sqlite-shm)$ *.mm_db_marker.php
+@blocked path_regexp (mintymetrics-[0-9a-f]+\.sqlite(-wal|-shm|-journal)?|\.mm_db_marker(\.php)?|\.mm_setup_token\.php)$
 respond @blocked 403
 ```
 
 ## Files Created
 
-No files are written to disk until you complete the setup wizard. After setup, MintyMetrics creates:
+Before setup, the only file written is `.mm_setup_token.php` (next to `analytics.php`), which holds the one-time setup token and is deleted when setup completes. After setup, MintyMetrics creates:
 
 | File | Location | Purpose |
 |---|---|---|
-| `.mm_db_marker.php` | Same directory as `analytics.php` | Stores the randomized DB filename suffix |
-| `mintymetrics-{hex}.sqlite` | One directory above web root (falls back to same directory) | SQLite database |
+| `.mm_db_marker.php` | Same directory as `analytics.php` | Records the database location |
+| `mintymetrics-{hex}.sqlite` | One directory above `analytics.php` if that is outside the web root, otherwise the same directory | SQLite database |
 | `mintymetrics-{hex}.sqlite-wal`, `-shm` | Next to the `.sqlite` file | SQLite WAL journal files (normal operation) |
+| `mm_sessions/` | Next to the `.sqlite` file | Dashboard login sessions (protected by its own `.htaccess`) |
 | `.htaccess` | Same directory as `analytics.php` | Apache rules to block direct access to the DB and marker files |
 
 Optional: If you enable geolocation and upload the IP2Location database, an `.BIN` file is also stored alongside `analytics.php`.
@@ -234,7 +234,8 @@ Optional: If you enable geolocation and upload the IP2Location database, an `.BI
 
 ```
 /src
-  config.php          # Constants, config functions, DB path, salt rotation
+  config.php          # Constants, config functions, DB path, salt rotation, timezone
+  http.php            # HTTPS detection, sessions, redirects, CLI commands
   database.php        # SQLite connection and schema
   auth.php            # Login, session, password management
   useragent.php       # User-Agent parsing (device, browser, OS)
@@ -264,7 +265,7 @@ MintyMetrics is designed to be privacy-compliant by default. A detailed privacy 
 
 **DNT / GPC:** when Do Not Track or Global Privacy Control signals are detected, no data is collected for that visitor (enabled by default).
 
-**Data retention:** raw pageview data is retained for a configurable period (default 90 days), after which it is aggregated into anonymous daily summaries and deleted. Summaries contain no individual visitor information.
+**Data retention:** raw pageview data is retained for a configurable period (default 90 days), after which it is aggregated into anonymous daily summaries and deleted. Summaries contain no individual visitor information. Days are counted in the timezone chosen in Settings (detected from your browser during setup).
 
 ## AI Attribution
 

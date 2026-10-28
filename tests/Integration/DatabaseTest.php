@@ -431,6 +431,22 @@ class DatabaseTest extends IntegrationTestCase
         });
     }
 
+    public function testMigrationV4ToV5AddsLoginThrottling(): void
+    {
+        $this->withTempDb(function (\SQLite3 $db) {
+            \MintyMetrics\db_configure($db, true);
+            \MintyMetrics\db_init_with($db);
+            // Shape of a database created by the v4 schema
+            $db->exec('DROP TABLE login_attempts');
+            $db->exec("UPDATE settings SET value = '4' WHERE key = 'schema_version'");
+
+            \MintyMetrics\db_init_with($db);
+
+            $this->assertSame('5', $db->querySingle("SELECT value FROM settings WHERE key = 'schema_version'"));
+            $this->assertSame(1, (int) $db->querySingle("SELECT COUNT(*) FROM sqlite_master WHERE name = 'login_attempts'"));
+        });
+    }
+
     public function testFailedMigrationThrowsAndKeepsVersion(): void
     {
         $this->withTempDb(function (\SQLite3 $db) {
