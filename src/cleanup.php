@@ -38,7 +38,7 @@ function cleanup_run(): void {
 
         // Prune rate limit table
         $stmt = $db->prepare('DELETE FROM rate_limit WHERE last_hit_at < :cutoff');
-        $stmt->bindValue(':cutoff', \microtime(true) - 60, SQLITE3_FLOAT);
+        $stmt->bindValue(':cutoff', \microtime(true) - 120, SQLITE3_FLOAT);
         $stmt->execute();
 
         // Prune expired login throttling rows

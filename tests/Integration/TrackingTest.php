@@ -332,7 +332,8 @@ class TrackingTest extends IntegrationTestCase
     {
         // arrays decode to indexed arrays in PHP — we only accept objects/assoc
         $this->assertNotNull(\MintyMetrics\validate_event_props('{"a":1}'));
-        // Numeric or scalar JSON should be rejected
+        // JSON arrays and scalars are rejected; props must be an object
+        $this->assertNull(\MintyMetrics\validate_event_props('[1,2]'));
         $this->assertNull(\MintyMetrics\validate_event_props('"just a string"'));
         $this->assertNull(\MintyMetrics\validate_event_props('42'));
     }
@@ -348,31 +349,6 @@ class TrackingTest extends IntegrationTestCase
     {
         $big = '{"k":"' . str_repeat('x', 1100) . '"}';
         $this->assertNull(\MintyMetrics\validate_event_props($big));
-    }
-
-    // ─── Events: Rate Limit Bucket Isolation ────────────────────────────
-
-    public function testRateLimitBucketsAreIndependent(): void
-    {
-        $ipHash = hash('sha256', '203.0.113.7');
-
-        // First call in the default bucket — should be allowed
-        $this->assertFalse(\MintyMetrics\check_rate_limit($ipHash));
-        // Immediate second call in default bucket — throttled
-        $this->assertTrue(\MintyMetrics\check_rate_limit($ipHash));
-        // But the 'evt:' bucket is fresh — should be allowed
-        $this->assertFalse(\MintyMetrics\check_rate_limit($ipHash, 'evt:'));
-        // Immediate second 'evt:' call — throttled
-        $this->assertTrue(\MintyMetrics\check_rate_limit($ipHash, 'evt:'));
-    }
-
-    public function testRateLimitBucketsStoredAsDistinctRows(): void
-    {
-        $ipHash = hash('sha256', '203.0.113.8');
-        \MintyMetrics\check_rate_limit($ipHash);
-        \MintyMetrics\check_rate_limit($ipHash, 'evt:');
-        // Two distinct rows: one with bare hash, one with 'evt:'+hash
-        $this->assertSame(2, $this->countRows('rate_limit'));
     }
 
     // ─── Events: End-to-End via track_event() ───────────────────────────

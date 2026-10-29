@@ -357,6 +357,14 @@ function get_salt(): string {
             return $salt;
         }
 
+        // Keep the outgoing salt one more day so beacons sent just after midnight
+        // can still be matched to the hit they belong to
+        $oldSalt = $db->querySingle("SELECT value FROM settings WHERE key = 'daily_salt'");
+        if (\is_string($oldSalt) && $row) {
+            $db->exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('prev_salt', '" . \SQLite3::escapeString($oldSalt) . "')");
+            $db->exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('prev_salt_date', '" . \SQLite3::escapeString((string) $row['value']) . "')");
+        }
+
         $stmt = $db->prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (:key, :value)');
         $stmt->bindValue(':key', 'daily_salt', SQLITE3_TEXT);
         $stmt->bindValue(':value', $salt, SQLITE3_TEXT);
@@ -384,10 +392,31 @@ function get_salt(): string {
 }
 
 /**
+ * Yesterday's salt, if the salt rotated from yesterday to today (null otherwise).
+ */
+function get_prev_salt(): ?string {
+    try {
+        $db = db();
+        $date = $db->querySingle("SELECT value FROM settings WHERE key = 'prev_salt_date'");
+        if ($date !== \date('Y-m-d', \strtotime('yesterday'))) {
+            return null;
+        }
+        $salt = $db->querySingle("SELECT value FROM settings WHERE key = 'prev_salt'");
+        return \is_string($salt) && $salt !== '' ? $salt : null;
+    } catch (\Throwable $e) {
+        return null;
+    }
+}
+
+/**
  * Check whether the DB marker file exists (without creating it).
  * Returns true if a database has been initialised at some point.
  */
 function db_marker_exists(): bool {
+    // Test injection override — an injected database counts as an initialized install
+    if (\defined('MM_TESTING') && isset($GLOBALS['_mm_test_db']) && !isset($GLOBALS['_mm_app_dir'])) {
+        return true;
+    }
     return \file_exists(db_marker_path()) || \file_exists(app_dir() . '/.mm_db_marker');
 }
 
@@ -519,24 +548,22 @@ function get_allowed_domains(): array {
  * For IPv4: returns as-is.
  */
 function normalize_ip(string $ip): string {
-    // Handle IPv4-mapped IPv6 (::ffff:1.2.3.4)
-    if (\str_starts_with($ip, '::ffff:')) {
-        $ip = \substr($ip, 7);
+    $packed = @\inet_pton($ip);
+    if ($packed === false) {
+        return $ip;
     }
 
-    // Check if IPv6
-    if (\str_contains($ip, ':')) {
-        // Expand IPv6 and take the /64 prefix
-        $packed = @\inet_pton($ip);
-        if ($packed === false) {
-            return $ip;
-        }
-        // Zero out the last 8 bytes (keep /64 prefix)
-        $packed = \substr($packed, 0, 8) . \str_repeat("\0", 8);
-        return \inet_ntop($packed);
+    // IPv4-mapped IPv6 in any spelling (::ffff:1.2.3.4, 0:0:0:0:0:ffff:c000:201) is IPv4
+    if (\strlen($packed) === 16 && \str_starts_with($packed, \str_repeat("\0", 10) . "\xff\xff")) {
+        return \inet_ntop(\substr($packed, 12));
     }
 
-    return $ip;
+    if (\strlen($packed) === 16) {
+        // Keep the /64 prefix (zero the interface identifier)
+        return \inet_ntop(\substr($packed, 0, 8) . \str_repeat("\0", 8));
+    }
+
+    return \inet_ntop($packed);
 }
 
 /**

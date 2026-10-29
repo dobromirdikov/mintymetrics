@@ -174,11 +174,11 @@ class UserAgentTest extends TestCase
         return [
             'Windows NT 10.0' => [
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0',
-                '10.0',
+                '10/11',
             ],
             'macOS 10.15.7 (underscores)' => [
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
-                '10.15.7',
+                '10.15+',
             ],
             'iOS 17.2 (underscores)' => [
                 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) Safari/604.1',
@@ -255,5 +255,25 @@ class UserAgentTest extends TestCase
         $this->assertArrayHasKey('os', $result);
         $this->assertArrayHasKey('os_ver', $result);
         $this->assertCount(5, $result);
+    }
+
+    public static function inAppBrowserProvider(): array
+    {
+        return [
+            'Instagram iOS' => ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 307.0.0.34.111', 'Instagram', '307.0'],
+            'Facebook iOS' => ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [FBAN/FBIOS;FBAV/440.0.0.33.117;]', 'Facebook', '440.0'],
+            'Gmail iOS WKWebView' => ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148', 'iOS WebView', '17.2'],
+            'Android WebView' => ['Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ3A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/120.0.6099.43 Mobile Safari/537.36', 'Android WebView', '120.0'],
+            'Opera Mini uses its own version' => ['Opera/9.80 (Android; Opera Mini/36.2.2254/119.132; U; id) Presto/2.12.423 Version/12.16 Chrome/120.0', 'Opera', '36.2'],
+            'Safari' => ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15', 'Safari', '17.1'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('inAppBrowserProvider')]
+    public function testInAppBrowsersAndMatchingVersions(string $ua, string $browser, string $version): void
+    {
+        $result = \MintyMetrics\parse_ua($ua);
+        $this->assertSame($browser, $result['browser']);
+        $this->assertSame($version, $result['browser_ver']);
     }
 }

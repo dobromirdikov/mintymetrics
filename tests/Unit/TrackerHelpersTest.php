@@ -37,6 +37,10 @@ class TrackerHelpersTest extends TestCase
             'Java client' => ['Java/11.0.2'],
             'Archive.org' => ['Mozilla/5.0 (compatible; archive.org_bot +http://www.archive.org/details/archive.org_bot)'],
             'Empty UA' => [''],
+            'Facebook link preview' => ['facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)'],
+            'Google Inspection Tool' => ['Mozilla/5.0 (compatible; Google-InspectionTool/1.0;)'],
+            'Applebot' => ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.1 Safari/605.1.15 (Applebot/0.1)'],
+            'Slackbot' => ['Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)'],
         ];
     }
 
@@ -49,6 +53,8 @@ class TrackerHelpersTest extends TestCase
     public static function humanUserAgentProvider(): array
     {
         return [
+            'CUBOT phone' => ['Mozilla/5.0 (Linux; Android 12; CUBOT_X30) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'],
+            'CUBOT KingKong' => ['Mozilla/5.0 (Linux; Android 11; KINGKONG 5 Pro Build/RP1A; CUBOT KINGKONG) AppleWebKit/537.36 Chrome/119.0 Mobile Safari/537.36'],
             'Chrome on Windows' => [
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             ],

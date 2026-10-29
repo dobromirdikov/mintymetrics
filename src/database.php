@@ -1,7 +1,7 @@
 <?php
 namespace MintyMetrics;
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 /**
  * Get the singleton SQLite3 database connection.
@@ -104,6 +104,7 @@ function db_init_with(\SQLite3 $db): void {
         2 => 'db_migrate_v3',
         3 => 'db_migrate_v4',
         4 => 'db_migrate_v5',
+        5 => 'db_migrate_v6',
     ];
     foreach ($migrations as $fromVersion => $migration) {
         if ($schemaVersion !== $fromVersion) {
@@ -169,13 +170,15 @@ function db_create_schema(\SQLite3 $db): void {
             language     TEXT DEFAULT NULL,
             time_on_page    INTEGER DEFAULT NULL,
             last_active_at  INTEGER DEFAULT NULL,
-            created_at      INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            created_at      INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            pageview_id     TEXT DEFAULT NULL
         )
     ");
     $db->exec('CREATE INDEX IF NOT EXISTS idx_hits_site_created ON hits(site, created_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_hits_visitor ON hits(visitor_hash, created_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_hits_page ON hits(site, page_path, created_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_hits_created ON hits(created_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hits_pageview ON hits(pageview_id)');
 
     // Daily summaries (kept indefinitely). Dates are local days in the configured timezone.
     // visitor_days/bounced/time_sum/time_count let ratios be weighted correctly across a range.
@@ -229,7 +232,8 @@ function db_create_schema(\SQLite3 $db): void {
     $db->exec("
         CREATE TABLE IF NOT EXISTS rate_limit (
             ip_hash     TEXT PRIMARY KEY,
-            last_hit_at REAL NOT NULL
+            last_hit_at REAL NOT NULL,
+            hits        INTEGER NOT NULL DEFAULT 0
         )
     ");
     $db->exec('CREATE INDEX IF NOT EXISTS idx_ratelimit_time ON rate_limit(last_hit_at)');
@@ -347,6 +351,20 @@ function db_migrate_v4(\SQLite3 $db): void {
             time_count   = CASE WHEN avg_time_on_page IS NULL THEN 0 ELSE pageviews END
     ");
     $db->exec('CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)');
+}
+
+/**
+ * Migration v5 → v6: request counter for the per-IP flood limit, and a per-pageview ID
+ * so time-on-page beacons update exactly the pageview they belong to.
+ */
+function db_migrate_v6(\SQLite3 $db): void {
+    if (!\in_array('hits', db_table_columns($db, 'rate_limit'), true)) {
+        $db->exec('ALTER TABLE rate_limit ADD COLUMN hits INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!\in_array('pageview_id', db_table_columns($db, 'hits'), true)) {
+        $db->exec('ALTER TABLE hits ADD COLUMN pageview_id TEXT DEFAULT NULL');
+    }
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hits_pageview ON hits(pageview_id)');
 }
 
 /** Migration v4 → v5: per-client login throttling. */

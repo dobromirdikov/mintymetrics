@@ -7,10 +7,11 @@ namespace MintyMetrics;
  * @return array{device: string, browser: string, browser_ver: string, os: string, os_ver: string}
  */
 function parse_ua(string $ua): array {
+    $browser = detect_browser($ua);
     return [
         'device'      => detect_device($ua),
-        'browser'     => detect_browser($ua),
-        'browser_ver' => detect_browser_version($ua),
+        'browser'     => $browser,
+        'browser_ver' => detect_browser_version($ua, $browser),
         'os'          => detect_os($ua),
         'os_ver'      => detect_os_version($ua),
     ];
@@ -28,43 +29,54 @@ function detect_device(string $ua): string {
     return 'desktop';
 }
 
+/**
+ * Browser detection rules, most specific first. Each entry is
+ * [name, detection regex, version regex (capture group 1)].
+ */
+function browser_rules(): array {
+    return [
+        // In-app browsers report their host app, not the engine underneath
+        ['Instagram', '/Instagram/i', '/Instagram (\d+(?:\.\d+)?)/i'],
+        ['Facebook', '/FBAN|FBAV|FB_IAB/i', '/FBAV\/(\d+(?:\.\d+)?)/i'],
+        ['Google App', '/\bGSA\//', '/GSA\/(\d+(?:\.\d+)?)/'],
+        ['Edge', '/Edg(?:e|A|iOS)?\/[\d.]+/i', '/Edg(?:e|A|iOS)?\/(\d+(?:\.\d+)?)/i'],
+        ['Opera', '/OPR\/|OPiOS|Opera/i', '/(?:OPR|OPiOS|Opera Mini|Opera Mobi|Version)\/(\d+(?:\.\d+)?)/i'],
+        ['Samsung Internet', '/SamsungBrowser/i', '/SamsungBrowser\/(\d+(?:\.\d+)?)/i'],
+        ['UC Browser', '/UCBrowser|UCWEB/i', '/UCBrowser\/(\d+(?:\.\d+)?)/i'],
+        ['Brave', '/Brave/i', '/Brave\/(\d+(?:\.\d+)?)/i'],
+        ['Vivaldi', '/Vivaldi/i', '/Vivaldi\/(\d+(?:\.\d+)?)/i'],
+        ['Yandex', '/YaBrowser/i', '/YaBrowser\/(\d+(?:\.\d+)?)/i'],
+        ['Firefox', '/Firefox|FxiOS/i', '/(?:Firefox|FxiOS)\/(\d+(?:\.\d+)?)/i'],
+        ['Chrome', '/CriOS/i', '/CriOS\/(\d+(?:\.\d+)?)/i'],
+        // Android System WebView marks itself with "; wv)"
+        ['Android WebView', '/;\s*wv\)/i', '/Chrome\/(\d+(?:\.\d+)?)/i'],
+        ['Chromium', '/Chromium/i', '/Chromium\/(\d+(?:\.\d+)?)/i'],
+        ['Chrome', '/Chrome\/[\d.]+/i', '/Chrome\/(\d+(?:\.\d+)?)/i'],
+        ['Safari', '/Version\/[\d.]+.*Safari\//i', '/Version\/(\d+(?:\.\d+)?)/i'],
+        // iOS apps embedding WebKit (WKWebView) omit the Safari/ token
+        ['iOS WebView', '/(?:iPhone|iPad|iPod).*AppleWebKit(?!.*Safari\/)/i', '/OS (\d+[_.]\d+)/i'],
+        ['Safari', '/Safari\/[\d.]+/i', '/Version\/(\d+(?:\.\d+)?)/i'],
+        ['Internet Explorer', '/MSIE|Trident/i', '/(?:MSIE |rv:)(\d+(?:\.\d+)?)/i'],
+    ];
+}
+
 function detect_browser(string $ua): string {
-    // Order matters: check more specific patterns first
-    if (\preg_match('/Edg(?:e|A|iOS)?\/[\d.]+/i', $ua)) return 'Edge';
-    if (\preg_match('/OPR\/|Opera/i', $ua)) return 'Opera';
-    if (\preg_match('/SamsungBrowser/i', $ua)) return 'Samsung Internet';
-    if (\preg_match('/UCBrowser|UCWEB/i', $ua)) return 'UC Browser';
-    if (\preg_match('/Brave/i', $ua)) return 'Brave';
-    if (\preg_match('/Vivaldi/i', $ua)) return 'Vivaldi';
-    if (\preg_match('/YaBrowser/i', $ua)) return 'Yandex';
-    if (\preg_match('/Firefox|FxiOS/i', $ua)) return 'Firefox';
-    if (\preg_match('/CriOS/i', $ua)) return 'Chrome'; // Chrome on iOS
-    if (\preg_match('/Chrome\/[\d.]+/i', $ua) && !\preg_match('/Chromium/i', $ua)) return 'Chrome';
-    if (\preg_match('/Chromium/i', $ua)) return 'Chromium';
-    if (\preg_match('/Safari\/[\d.]+/i', $ua) && !\preg_match('/Chrome|Chromium/i', $ua)) return 'Safari';
-    if (\preg_match('/MSIE|Trident/i', $ua)) return 'Internet Explorer';
+    foreach (browser_rules() as [$name, $detect]) {
+        if (\preg_match($detect, $ua)) {
+            return $name;
+        }
+    }
     return 'Other';
 }
 
-function detect_browser_version(string $ua): string {
-    $patterns = [
-        '/Edg(?:e|A|iOS)?\/(\d+(?:\.\d+)?)/i',
-        '/OPR\/(\d+(?:\.\d+)?)/i',
-        '/SamsungBrowser\/(\d+(?:\.\d+)?)/i',
-        '/UCBrowser\/(\d+(?:\.\d+)?)/i',
-        '/Brave\/(\d+(?:\.\d+)?)/i',
-        '/Vivaldi\/(\d+(?:\.\d+)?)/i',
-        '/YaBrowser\/(\d+(?:\.\d+)?)/i',
-        '/(?:Firefox|FxiOS)\/(\d+(?:\.\d+)?)/i',
-        '/CriOS\/(\d+(?:\.\d+)?)/i',
-        '/Chrome\/(\d+(?:\.\d+)?)/i',
-        '/Version\/(\d+(?:\.\d+)?).*Safari/i',
-        '/(?:MSIE |rv:)(\d+(?:\.\d+)?)/i',
-    ];
-
-    foreach ($patterns as $pattern) {
-        if (\preg_match($pattern, $ua, $m)) {
-            return $m[1];
+/**
+ * Version of the browser that detect_browser() found (never another token in the UA).
+ */
+function detect_browser_version(string $ua, ?string $browser = null): string {
+    $browser ??= detect_browser($ua);
+    foreach (browser_rules() as [$name, $detect, $version]) {
+        if ($name === $browser && \preg_match($detect, $ua)) {
+            return \preg_match($version, $ua, $m) ? \str_replace('_', '.', $m[1]) : '';
         }
     }
     return '';
@@ -91,8 +103,18 @@ function detect_os_version(string $ua): string {
     ];
 
     $os = detect_os($ua);
-    if (isset($patterns[$os]) && \preg_match($patterns[$os], $ua, $m)) {
-        return \str_replace('_', '.', $m[1]);
+    if (!isset($patterns[$os]) || !\preg_match($patterns[$os], $ua, $m)) {
+        return '';
     }
-    return '';
+    $version = \str_replace('_', '.', $m[1]);
+
+    // Browsers freeze these values: Windows 11 still says NT 10.0, and every macOS
+    // since Catalina says 10.15.7. Label them as ranges instead of a false precise version.
+    if ($os === 'Windows' && $version === '10.0') {
+        return '10/11';
+    }
+    if ($os === 'macOS' && \str_starts_with($version, '10.15')) {
+        return '10.15+';
+    }
+    return $version;
 }

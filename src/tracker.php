@@ -1,8 +1,27 @@
 <?php
 namespace MintyMetrics;
 
-// Known bot patterns (compiled regex)
-const BOT_REGEX = '/bot|crawl|spider|slurp|bingbot|googlebot|yandexbot|baiduspider|duckduckbot|sogou|exabot|facebot|ia_archiver|semrush|ahrefs|mj12bot|dotbot|petalbot|bytespider|gptbot|claudebot|ccbot|chatgpt|archive\.org|wget|curl|python-requests|go-http-client|java\/|headlesschrome|phantomjs|lighthouse|pagespeed|uptimerobot|pingdom|statuspage/i';
+// Known bot patterns (compiled regex). "bot" only counts as a whole token or a word
+// ending (Googlebot, AhrefsBot); the lookbehind keeps CUBOT phones from matching.
+const BOT_REGEX = '/(?<!cu)bot(?![a-z])|crawl|spider|slurp|yandex(?:bot|images)|baiduspider|sogou|exabot|facebot|facebookexternalhit|ia_archiver|semrush|ahrefs|mj12|petalbot|bytespider|gptbot|claudebot|ccbot|chatgpt|perplexity|archive\.org|wget|curl|python-requests|python-urllib|go-http-client|java\/|okhttp|headlesschrome|phantomjs|lighthouse|pagespeed|google-inspectiontool|mediapartners-google|adsbot|uptimerobot|pingdom|statuspage|embedly/i';
+
+/** Per-IP request cap per minute for each endpoint kind (flood protection). */
+const RATE_LIMIT_PER_MINUTE = 300;
+
+/** Query parameters that only identify a click or campaign and split page stats. */
+const TRACKING_QUERY_PARAMS = ['gclid', 'gbraid', 'wbraid', 'dclid', 'gclsrc', 'fbclid', 'msclkid', 'yclid',
+    'twclid', 'ttclid', 'li_fat_id', 'igshid', 'mc_cid', 'mc_eid', '_ga', '_gl', '_hsenc', '_hsmi',
+    'mkt_tok', 'oly_anon_id', 'oly_enc_id', 'vero_id', 'srsltid', 'epik', 'ref_src'];
+
+/**
+ * Query parameter names that commonly carry secrets or personal data; never stored.
+ * Matched against each part of a name split on [ ] _ - . (so user[email], reset_token
+ * and x-api-key all match), plus a few words that are sensitive anywhere in a name.
+ */
+const SENSITIVE_QUERY_WORDS = ['token', 'auth', 'authorization', 'key', 'apikey', 'secret', 'password', 'passwd',
+    'pwd', 'pass', 'email', 'mail', 'code', 'state', 'session', 'sessionid', 'sid', 'sig', 'signature', 'otp',
+    'jwt', 'reset', 'ticket', 'nonce', 'credential', 'credentials', 'phone', 'ssn', 'hash'];
+const SENSITIVE_QUERY_SUBSTRING_REGEX = '/token|passw|secret|e-?mail|session|signature|api_?key|credential/';
 
 /**
  * Record a pageview hit.
@@ -16,47 +35,32 @@ function track_hit(): void {
         }
 
         $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
-
-        // Bot filtering
-        if (is_bot($ua)) {
+        if (is_bot($ua) || dnt_requested()) {
             return;
         }
 
-        // DNT / GPC respect
-        if (get_config('respect_dnt', '1') === '1') {
-            if (($_SERVER['HTTP_DNT'] ?? '') === '1' || ($_SERVER['HTTP_SEC_GPC'] ?? '') === '1') {
-                return;
-            }
+        // Validate the site before writing anything (rejected requests cost no writes)
+        $site = sanitize_site($_GET['site'] ?? ($_SERVER['HTTP_HOST'] ?? ''));
+        if ($site === '' || !validate_domain($site)) {
+            return;
         }
 
         $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-        $normalizedIp = normalize_ip($ip);
-        $ipHash = \hash('sha256', $normalizedIp);
-
-        // Rate limiting
-        if (check_rate_limit($ipHash)) {
-            return;
-        }
-
-        // Domain validation
-        $site = sanitize_site($_GET['site'] ?? ($_SERVER['HTTP_HOST'] ?? ''));
-        if (!validate_domain($site)) {
-            return;
-        }
-
-        // Generate visitor hash (daily-rotating, privacy-preserving)
-        $salt = get_salt();
-        $visitorHash = generate_visitor_hash($ip, $ua, $salt);
+        $visitorHash = generate_visitor_hash($ip, $ua, get_salt(), $site);
 
         // Parse tracking data
-        $pagePath = truncate($_GET['page'] ?? $_SERVER['REQUEST_URI'] ?? '/', MAX_PAGE_PATH);
+        $pagePath = clean_page_path($_GET['page'] ?? $_SERVER['REQUEST_URI'] ?? '/');
         $referrer = truncate($_GET['ref'] ?? $_SERVER['HTTP_REFERER'] ?? '', MAX_REFERRER);
         $referrerDomain = parse_referrer_domain($referrer);
+        if ($referrerDomain !== null && is_own_site($referrerDomain, $site)) {
+            // Navigation within the site is not a referral
+            $referrer = '';
+            $referrerDomain = null;
+        }
         $utm = parse_utm($_GET);
         $screenRes = truncate($_GET['res'] ?? '', MAX_SCREEN_RES);
         $language = truncate($_GET['lang'] ?? '', MAX_LANGUAGE);
-
-        // Parse User-Agent
+        $pageviewId = pageview_id_param($_GET['pv'] ?? '');
         $uaData = parse_ua($ua);
 
         // Geo lookup (before discarding IP)
@@ -65,40 +69,55 @@ function track_hit(): void {
             $countryCode = geo_lookup($ip);
         }
 
-        // Write to database
+        // Rate limit and insert in one write transaction
         $db = db();
-        $stmt = $db->prepare('
-            INSERT INTO hits (site, visitor_hash, page_path, referrer_url, referrer_domain,
-                utm_source, utm_medium, utm_campaign, utm_term, utm_content,
-                country_code, device_type, browser, browser_ver, os, os_ver,
-                screen_res, language)
-            VALUES (:site, :hash, :page, :ref_url, :ref_domain,
-                :utm_s, :utm_m, :utm_c, :utm_t, :utm_ct,
-                :country, :device, :browser, :browser_ver, :os, :os_ver,
-                :screen, :lang)
-        ');
+        $db->exec('BEGIN IMMEDIATE');
+        try {
+            // Drops only exact repeats (same visitor, same page, within a second), so
+            // people sharing an IP (NAT, offices) are never dropped for each other. With a
+            // pageview ID, two tabs opened on the same page at once both count.
+            if (check_rate_limit('hit|' . $visitorHash . '|' . $pagePath . '|' . ($pageviewId ?? ''), $ip, 'hit')) {
+                $db->exec('COMMIT');
+                return;
+            }
 
-        $stmt->bindValue(':site', $site, SQLITE3_TEXT);
-        $stmt->bindValue(':hash', $visitorHash, SQLITE3_TEXT);
-        $stmt->bindValue(':page', $pagePath, SQLITE3_TEXT);
-        $stmt->bindValue(':ref_url', $referrer ?: null, $referrer ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':ref_domain', $referrerDomain, $referrerDomain ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':utm_s', $utm['source'], $utm['source'] ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':utm_m', $utm['medium'], $utm['medium'] ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':utm_c', $utm['campaign'], $utm['campaign'] ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':utm_t', $utm['term'], $utm['term'] ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':utm_ct', $utm['content'], $utm['content'] ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':country', $countryCode, $countryCode ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':device', $uaData['device'], SQLITE3_TEXT);
-        $stmt->bindValue(':browser', $uaData['browser'], SQLITE3_TEXT);
-        $stmt->bindValue(':browser_ver', $uaData['browser_ver'], $uaData['browser_ver'] ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':os', $uaData['os'], SQLITE3_TEXT);
-        $stmt->bindValue(':os_ver', $uaData['os_ver'], $uaData['os_ver'] ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':screen', $screenRes ?: null, $screenRes ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':lang', $language ?: null, $language ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt = $db->prepare('
+                INSERT INTO hits (site, visitor_hash, page_path, referrer_url, referrer_domain,
+                    utm_source, utm_medium, utm_campaign, utm_term, utm_content,
+                    country_code, device_type, browser, browser_ver, os, os_ver,
+                    screen_res, language, pageview_id)
+                VALUES (:site, :hash, :page, :ref_url, :ref_domain,
+                    :utm_s, :utm_m, :utm_c, :utm_t, :utm_ct,
+                    :country, :device, :browser, :browser_ver, :os, :os_ver,
+                    :screen, :lang, :pv)
+            ');
 
-        $stmt->execute();
+            $stmt->bindValue(':site', $site, SQLITE3_TEXT);
+            $stmt->bindValue(':hash', $visitorHash, SQLITE3_TEXT);
+            $stmt->bindValue(':page', $pagePath, SQLITE3_TEXT);
+            $stmt->bindValue(':ref_url', $referrer ?: null, $referrer ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':ref_domain', $referrerDomain, $referrerDomain ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':utm_s', $utm['source'], $utm['source'] ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':utm_m', $utm['medium'], $utm['medium'] ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':utm_c', $utm['campaign'], $utm['campaign'] ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':utm_t', $utm['term'], $utm['term'] ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':utm_ct', $utm['content'], $utm['content'] ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':country', $countryCode, $countryCode ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':device', $uaData['device'], SQLITE3_TEXT);
+            $stmt->bindValue(':browser', $uaData['browser'], SQLITE3_TEXT);
+            $stmt->bindValue(':browser_ver', $uaData['browser_ver'], $uaData['browser_ver'] ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':os', $uaData['os'], SQLITE3_TEXT);
+            $stmt->bindValue(':os_ver', $uaData['os_ver'], $uaData['os_ver'] ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':screen', $screenRes ?: null, $screenRes ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':lang', $language ?: null, $language ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':pv', $pageviewId, $pageviewId !== null ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->execute();
 
+            $db->exec('COMMIT');
+        } catch (\Throwable $e) {
+            db_rollback($db);
+            throw $e;
+        }
     } catch (\Throwable $e) {
         // Silently fail — tracking errors must never break anything
         log_error('track_hit: ' . $e->getMessage());
@@ -106,7 +125,8 @@ function track_hit(): void {
 }
 
 /**
- * Handle time-on-page beacon (POST).
+ * Handle time-on-page beacon (POST). The tracker sends the cumulative visible time
+ * for the page each time it is hidden; the largest value wins.
  */
 function track_beacon(): void {
     try {
@@ -128,45 +148,66 @@ function track_beacon(): void {
             return;
         }
 
-        $site = sanitize_site($_POST['site'] ?? '');
-        $page = truncate($_POST['page'] ?? '', MAX_PAGE_PATH);
-        $time = (int) ($_POST['time'] ?? 0);
-
-        if ($time < 1 || $time > 3600) {
-            \http_response_code(204);
-            return;
-        }
-
-        if (!validate_domain($site)) {
-            \http_response_code(204);
-            return;
-        }
-
-        // Generate same visitor hash to match the original hit
-        $ip = $_SERVER['REMOTE_ADDR'] ?? '';
         $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
-        $hash = generate_visitor_hash($ip, $ua, get_salt());
+        if (is_bot($ua) || dnt_requested()) {
+            \http_response_code(204);
+            return;
+        }
 
+        $site = sanitize_site($_POST['site'] ?? '');
+        $page = clean_page_path($_POST['page'] ?? '');
+        $time = (int) ($_POST['time'] ?? 0);
+        $pageviewId = pageview_id_param($_POST['pv'] ?? '');
+
+        if ($time < 1 || $site === '' || !validate_domain($site)) {
+            \http_response_code(204);
+            return;
+        }
+        // Long reads are capped rather than discarded
+        $time = \min($time, 3600);
+
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+        $now = \time();
         $db = db();
-        $stmt = $db->prepare('
-            UPDATE hits SET time_on_page = :time, last_active_at = :now
-            WHERE id = (
-                SELECT id FROM hits
-                WHERE visitor_hash = :hash AND site = :site AND page_path = :page
-                  AND created_at >= :today_start
-                ORDER BY created_at DESC LIMIT 1
-            )
-        ');
-        $stmt->bindValue(':time', $time, SQLITE3_INTEGER);
-        $stmt->bindValue(':now', \time(), SQLITE3_INTEGER);
-        $stmt->bindValue(':hash', $hash, SQLITE3_TEXT);
-        $stmt->bindValue(':site', $site, SQLITE3_TEXT);
-        $stmt->bindValue(':page', $page, SQLITE3_TEXT);
-        // Today's start as Unix timestamp
-        $todayStart = \strtotime(\date('Y-m-d'));
-        $stmt->bindValue(':today_start', $todayStart, SQLITE3_INTEGER);
-        $stmt->execute();
 
+        // Today's salt first; yesterday's for a page opened before midnight
+        foreach ([get_salt(), get_prev_salt()] as $salt) {
+            if ($salt === null) {
+                continue;
+            }
+            $hash = generate_visitor_hash($ip, $ua, $salt, $site);
+            if (check_rate_limit('bcn|' . $hash . '|' . ($pageviewId ?? $page), $ip, 'bcn')) {
+                break;
+            }
+            // With a pageview ID (current tracker) the beacon updates exactly its own
+            // pageview, so two tabs on the same page never overwrite each other. Older
+            // cached trackers fall back to the latest matching pageview.
+            $match = $pageviewId !== null
+                ? 'pageview_id = :pv AND visitor_hash = :hash AND site = :site'
+                : 'visitor_hash = :hash AND site = :site AND page_path = :page AND pageview_id IS NULL';
+            $stmt = $db->prepare("
+                UPDATE hits SET time_on_page = MAX(COALESCE(time_on_page, 0), :time), last_active_at = :now
+                WHERE id = (
+                    SELECT id FROM hits
+                    WHERE {$match} AND created_at >= :since
+                    ORDER BY created_at DESC LIMIT 1
+                )
+            ");
+            if ($pageviewId !== null) {
+                $stmt->bindValue(':pv', $pageviewId, SQLITE3_TEXT);
+            } else {
+                $stmt->bindValue(':page', $page, SQLITE3_TEXT);
+            }
+            $stmt->bindValue(':time', $time, SQLITE3_INTEGER);
+            $stmt->bindValue(':now', $now, SQLITE3_INTEGER);
+            $stmt->bindValue(':hash', $hash, SQLITE3_TEXT);
+            $stmt->bindValue(':site', $site, SQLITE3_TEXT);
+            $stmt->bindValue(':since', $now - 2 * 86400, SQLITE3_INTEGER);
+            $stmt->execute();
+            if ($db->changes() > 0) {
+                break;
+            }
+        }
     } catch (\Throwable $e) {
         log_error('track_beacon: ' . $e->getMessage());
     }
@@ -176,8 +217,8 @@ function track_beacon(): void {
 
 /**
  * Record a custom event. Mirrors track_hit() validation gates so events get the
- * same bot/DNT/rate-limit/domain protection. Uses a separate rate-limit bucket
- * so a quick burst of events does not throttle pageview tracking.
+ * same bot/DNT/rate-limit/domain protection. Accepts GET (image pixel) and POST
+ * (navigator.sendBeacon, which survives page unloads) with the data in the query.
  */
 function track_event(): void {
     try {
@@ -186,26 +227,12 @@ function track_event(): void {
         }
 
         $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
-        if (is_bot($ua)) {
-            return;
-        }
-
-        if (get_config('respect_dnt', '1') === '1') {
-            if (($_SERVER['HTTP_DNT'] ?? '') === '1' || ($_SERVER['HTTP_SEC_GPC'] ?? '') === '1') {
-                return;
-            }
-        }
-
-        $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-        $normalizedIp = normalize_ip($ip);
-        $ipHash = \hash('sha256', $normalizedIp);
-
-        if (check_rate_limit($ipHash, 'evt:')) {
+        if (is_bot($ua) || dnt_requested()) {
             return;
         }
 
         $site = sanitize_site($_GET['site'] ?? ($_SERVER['HTTP_HOST'] ?? ''));
-        if (!validate_domain($site)) {
+        if ($site === '' || !validate_domain($site)) {
             return;
         }
 
@@ -223,12 +250,11 @@ function track_event(): void {
             : null;
 
         $pagePath = isset($_GET['page']) && $_GET['page'] !== ''
-            ? truncate((string) $_GET['page'], MAX_PAGE_PATH)
+            ? clean_page_path((string) $_GET['page'])
             : null;
 
-        $salt = get_salt();
-        $visitorHash = generate_visitor_hash($ip, $ua, $salt);
-
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+        $visitorHash = generate_visitor_hash($ip, $ua, get_salt(), $site);
         $uaData = parse_ua($ua);
 
         $countryCode = null;
@@ -237,29 +263,105 @@ function track_event(): void {
         }
 
         $db = db();
-        $stmt = $db->prepare('
-            INSERT INTO events (site, visitor_hash, name, value, props, page_path,
-                country_code, device_type, browser, os)
-            VALUES (:site, :hash, :name, :value, :props, :page,
-                :country, :device, :browser, :os)
-        ');
+        $db->exec('BEGIN IMMEDIATE');
+        try {
+            // Separate bucket per event name/value: a burst of different events is fine,
+            // only an exact repeat within a second is dropped
+            $pageviewId = pageview_id_param($_GET['pv'] ?? '');
+            if (check_rate_limit('evt|' . $visitorHash . '|' . ($pageviewId ?? '') . '|' . $name . '|' . $value, $ip, 'evt')) {
+                $db->exec('COMMIT');
+                return;
+            }
 
-        $stmt->bindValue(':site', $site, SQLITE3_TEXT);
-        $stmt->bindValue(':hash', $visitorHash, SQLITE3_TEXT);
-        $stmt->bindValue(':name', $name, SQLITE3_TEXT);
-        $stmt->bindValue(':value', $value, $value !== null ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':props', $props, $props !== null ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':page', $pagePath, $pagePath !== null ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':country', $countryCode, $countryCode ? SQLITE3_TEXT : SQLITE3_NULL);
-        $stmt->bindValue(':device', $uaData['device'], SQLITE3_TEXT);
-        $stmt->bindValue(':browser', $uaData['browser'], SQLITE3_TEXT);
-        $stmt->bindValue(':os', $uaData['os'], SQLITE3_TEXT);
+            $stmt = $db->prepare('
+                INSERT INTO events (site, visitor_hash, name, value, props, page_path,
+                    country_code, device_type, browser, os)
+                VALUES (:site, :hash, :name, :value, :props, :page,
+                    :country, :device, :browser, :os)
+            ');
 
-        $stmt->execute();
+            $stmt->bindValue(':site', $site, SQLITE3_TEXT);
+            $stmt->bindValue(':hash', $visitorHash, SQLITE3_TEXT);
+            $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+            $stmt->bindValue(':value', $value, $value !== null ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':props', $props, $props !== null ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':page', $pagePath, $pagePath !== null ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':country', $countryCode, $countryCode ? SQLITE3_TEXT : SQLITE3_NULL);
+            $stmt->bindValue(':device', $uaData['device'], SQLITE3_TEXT);
+            $stmt->bindValue(':browser', $uaData['browser'], SQLITE3_TEXT);
+            $stmt->bindValue(':os', $uaData['os'], SQLITE3_TEXT);
+            $stmt->execute();
 
+            $db->exec('COMMIT');
+        } catch (\Throwable $e) {
+            db_rollback($db);
+            throw $e;
+        }
     } catch (\Throwable $e) {
         log_error('track_event: ' . $e->getMessage());
     }
+}
+
+/**
+ * Validate a tracker-generated pageview ID (random hex); null if absent or malformed.
+ */
+function pageview_id_param(string $value): ?string {
+    return \preg_match('/^[a-f0-9]{16,32}$/', $value) ? $value : null;
+}
+
+/**
+ * Whether the visitor sent Do Not Track / Global Privacy Control and the site respects it.
+ */
+function dnt_requested(): bool {
+    if (get_config('respect_dnt', '1') !== '1') {
+        return false;
+    }
+    return ($_SERVER['HTTP_DNT'] ?? '') === '1' || ($_SERVER['HTTP_SEC_GPC'] ?? '') === '1';
+}
+
+/**
+ * Normalize a tracked page path: drop the #fragment, click/campaign IDs (UTM values
+ * are stored separately) and parameters that commonly carry secrets or personal data
+ * (?token=, ?email=). Other parameters (?p=123, ?q=search) are kept in order.
+ */
+function clean_page_path(string $page): string {
+    $page = \explode('#', $page, 2)[0];
+    $parts = \explode('?', $page, 2);
+    $path = $parts[0] === '' ? '/' : $parts[0];
+    if (!isset($parts[1]) || $parts[1] === '') {
+        return truncate($path, MAX_PAGE_PATH);
+    }
+
+    $kept = [];
+    foreach (\explode('&', $parts[1]) as $pair) {
+        if ($pair === '') {
+            continue;
+        }
+        $name = \strtolower(\urldecode(\explode('=', $pair, 2)[0]));
+        if (\str_starts_with($name, 'utm_') || \in_array($name, TRACKING_QUERY_PARAMS, true)
+            || is_sensitive_query_name($name)) {
+            continue;
+        }
+        $kept[] = $pair;
+    }
+
+    return truncate($kept ? $path . '?' . \implode('&', $kept) : $path, MAX_PAGE_PATH);
+}
+
+/**
+ * Whether a (decoded, lowercased) query parameter name looks like it carries a secret
+ * or personal data. Covers array syntax (token[], user[email]) and compound names.
+ */
+function is_sensitive_query_name(string $name): bool {
+    if (\preg_match(SENSITIVE_QUERY_SUBSTRING_REGEX, $name)) {
+        return true;
+    }
+    foreach (\preg_split('/[\[\]_\-.]+/', $name, -1, PREG_SPLIT_NO_EMPTY) as $part) {
+        if (\in_array($part, SENSITIVE_QUERY_WORDS, true)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -273,19 +375,18 @@ function validate_event_name(string $name): bool {
 }
 
 /**
- * Validate an event props payload.
- * Returns the normalized JSON string (re-encoded canonically) on success, or null otherwise.
- * Caller decides whether to store NULL or drop the entire event on null.
+ * Validate an event props payload: a JSON object of at most MAX_EVENT_PROPS_JSON bytes.
+ * Returns the re-encoded JSON (Unicode kept as-is, objects stay objects) or null.
  */
 function validate_event_props(string $raw): ?string {
     if ($raw === '' || \strlen($raw) > MAX_EVENT_PROPS_JSON) {
         return null;
     }
-    $decoded = \json_decode($raw, true);
-    if (!\is_array($decoded) || \json_last_error() !== JSON_ERROR_NONE) {
+    $decoded = \json_decode($raw);
+    if (!($decoded instanceof \stdClass) || \json_last_error() !== JSON_ERROR_NONE) {
         return null;
     }
-    $reencoded = \json_encode($decoded);
+    $reencoded = \json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($reencoded === false || \strlen($reencoded) > MAX_EVENT_PROPS_JSON) {
         return null;
     }
@@ -297,7 +398,7 @@ function validate_event_props(string $raw): ?string {
  */
 function serve_js(string $site): void {
     $site = sanitize_site($site);
-    if (!validate_domain($site)) {
+    if ($site === '' || !validate_domain($site)) {
         \http_response_code(403);
         return;
     }
@@ -309,6 +410,7 @@ function serve_js(string $site): void {
 
     \header('Content-Type: application/javascript; charset=utf-8');
     \header('Cache-Control: public, max-age=86400');
+    \header('X-Content-Type-Options: nosniff');
     echo $js;
 }
 
@@ -411,38 +513,57 @@ function is_bot(string $ua): bool {
 }
 
 /**
- * Check if the request should be rate-limited.
- * Returns true if the request should be DROPPED.
+ * Rate limiting. Returns true if the request should be DROPPED.
  *
- * The optional $bucket prefix isolates rate-limit keys per endpoint
- * (e.g. 'evt:' for ?event so a fast event burst doesn't throttle pageviews).
+ * Two checks, both atomic single-statement upserts:
+ *  - $key: drops an exact repeat (same $key) within RATE_LIMIT_SECONDS
+ *  - per-IP flood cap: at most RATE_LIMIT_PER_MINUTE requests of $kind per minute
+ * Keys are HMACs with the per-install secret, so stored rows cannot be reversed
+ * to IP addresses with a lookup table.
  */
-function check_rate_limit(string $ipHash, string $bucket = ''): bool {
+function check_rate_limit(string $key, string $ip, string $kind): bool {
     try {
         $db = db();
         $now = \microtime(true);
-        $key = $bucket . $ipHash;
+        $secret = install_secret();
 
-        $stmt = $db->prepare('SELECT last_hit_at FROM rate_limit WHERE ip_hash = :hash');
-        $stmt->bindValue(':hash', $key, SQLITE3_TEXT);
-        $result = $stmt->execute();
-        $row = $result->fetchArray(SQLITE3_ASSOC);
-
-        if ($row && ($now - $row['last_hit_at']) < RATE_LIMIT_SECONDS) {
-            return true; // Rate limited
-        }
-
-        // Upsert
-        $stmt = $db->prepare('INSERT OR REPLACE INTO rate_limit (ip_hash, last_hit_at) VALUES (:hash, :now)');
-        $stmt->bindValue(':hash', $key, SQLITE3_TEXT);
-        $stmt->bindValue(':now', $now, SQLITE3_FLOAT);
-        $stmt->execute();
-
-        // Periodic cleanup (every ~100 requests)
+        // Periodic cleanup (every ~100 requests, including rejected ones)
         if (\random_int(1, 100) === 1) {
             $clean = $db->prepare('DELETE FROM rate_limit WHERE last_hit_at < :cutoff');
-            $clean->bindValue(':cutoff', $now - 60, SQLITE3_FLOAT);
+            $clean->bindValue(':cutoff', $now - 120, SQLITE3_FLOAT);
             $clean->execute();
+        }
+
+        // Flood cap first: a flooding client must not be able to allocate a dedupe
+        // row per request (one counter row per IP and kind, whatever it sends)
+        $ipKey = \hash_hmac('sha256', 'ip|' . $kind . '|' . normalize_ip($ip), $secret);
+        $window = (float) (\intdiv((int) $now, 60) * 60);
+        $stmt = $db->prepare('
+            INSERT INTO rate_limit (ip_hash, last_hit_at, hits) VALUES (:k, :w, 1)
+            ON CONFLICT(ip_hash) DO UPDATE SET
+                hits = CASE WHEN rate_limit.last_hit_at < :w THEN 1 ELSE rate_limit.hits + 1 END,
+                last_hit_at = :w
+        ');
+        $stmt->bindValue(':k', $ipKey, SQLITE3_TEXT);
+        $stmt->bindValue(':w', $window, SQLITE3_FLOAT);
+        $stmt->execute();
+        $stmt = $db->prepare('SELECT hits FROM rate_limit WHERE ip_hash = :k');
+        $stmt->bindValue(':k', $ipKey, SQLITE3_TEXT);
+        if ((int) $stmt->execute()->fetchArray(SQLITE3_NUM)[0] > RATE_LIMIT_PER_MINUTE) {
+            return true;
+        }
+
+        $stmt = $db->prepare('
+            INSERT INTO rate_limit (ip_hash, last_hit_at, hits) VALUES (:k, :now, 1)
+            ON CONFLICT(ip_hash) DO UPDATE SET last_hit_at = excluded.last_hit_at, hits = rate_limit.hits + 1
+            WHERE rate_limit.last_hit_at <= :cutoff
+        ');
+        $stmt->bindValue(':k', \hash_hmac('sha256', $key, $secret), SQLITE3_TEXT);
+        $stmt->bindValue(':now', $now, SQLITE3_FLOAT);
+        $stmt->bindValue(':cutoff', $now - RATE_LIMIT_SECONDS, SQLITE3_FLOAT);
+        $stmt->execute();
+        if ($db->changes() === 0) {
+            return true; // Same request within the window
         }
 
         return false;
@@ -452,10 +573,14 @@ function check_rate_limit(string $ipHash, string $bucket = ''): bool {
 }
 
 /**
- * Generate a visitor hash from IP + User-Agent + daily salt.
+ * Generate a visitor hash from IP + User-Agent + site + daily salt.
+ *
+ * The IP is normalized (IPv6 to its /64, IPv4-mapped to IPv4) so rotating IPv6
+ * privacy addresses do not split one visitor. The site is included so the same
+ * person cannot be linked across sites tracked by one hub.
  */
-function generate_visitor_hash(string $ip, string $ua, string $salt): string {
-    return \hash('sha256', $ip . '|' . $ua . '|' . $salt);
+function generate_visitor_hash(string $ip, string $ua, string $salt, string $site = ''): string {
+    return \hash('sha256', normalize_ip($ip) . '|' . $ua . '|' . $site . '|' . $salt);
 }
 
 /**
@@ -467,6 +592,9 @@ function validate_domain(string $site): bool {
         return true; // No whitelist = allow all (single-site mode)
     }
 
+    if (get_config('allow_subdomains', '1') !== '1') {
+        return \in_array(normalize_domain($site), $allowed, true);
+    }
     return domain_matches_allowed($site, $allowed);
 }
 

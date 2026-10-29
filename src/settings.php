@@ -126,7 +126,11 @@ function render_settings(string $message = '', string $messageType = 'success'):
                         <h2>Tracking</h2>
                         <label for="domains">Allowed Domains</label>
                         <textarea form="mmSettingsForm" id="domains" name="domains" placeholder="example.com">' . e($domains) . '</textarea>
-                        <div class="hint">One domain per line (or comma-separated). Subdomains are included. At least one is required.</div>
+                        <div class="hint">One domain per line (or comma-separated). At least one is required.</div>
+                        <div class="mm-check-row">
+                            <input form="mmSettingsForm" type="checkbox" id="allow_subdomains" name="allow_subdomains" value="1"' . (get_config('allow_subdomains', '1') === '1' ? ' checked' : '') . '>
+                            <label for="allow_subdomains">Also accept subdomains (e.g. blog.example.com)</label>
+                        </div>
                         <div class="mm-check-row">
                             <input form="mmSettingsForm" type="checkbox" id="respect_dnt" name="respect_dnt" value="1"' . ($respectDnt === '1' ? ' checked' : '') . '>
                             <label for="respect_dnt">Respect Do Not Track / Global Privacy Control</label>
@@ -168,11 +172,11 @@ function render_settings(string $message = '', string $messageType = 'success'):
 
                         <div class="mm-geo-option">
                             <strong>Option 2:</strong> Upload BIN file
-                            <div class="hint">Download the ZIP from <a href="https://lite.ip2location.com/database/db1-ip-country" target="_blank" rel="noopener">IP2Location</a>, extract the .BIN file, and upload it here.</div>
+                            <div class="hint">Download the DB1 LITE BIN (the IPv6 edition covers IPv4 too) from <a href="https://lite.ip2location.com/database/db1-ip-country" target="_blank" rel="noopener">IP2Location</a> and upload the ZIP or the .BIN file inside it.</div>
                             <form method="POST" action="' . $scriptUrl . '?geo-upload" enctype="multipart/form-data">
                                 ' . csrf_field() . '
                                 <div class="mm-file-upload">
-                                    <input type="file" name="geofile" accept=".bin,.BIN">
+                                    <input type="file" name="geofile" accept=".bin,.BIN,.zip,.ZIP">
                                     <button type="submit" class="mm-upload-btn">Upload</button>
                                 </div>
                             </form>
@@ -303,6 +307,7 @@ function handle_settings(): void {
             set_config('timezone', $timezone);
         }
 
+        set_config('allow_subdomains', isset($_POST['allow_subdomains']) ? '1' : '0');
         set_config('respect_dnt', isset($_POST['respect_dnt']) ? '1' : '0');
         set_config('enable_geo', isset($_POST['enable_geo']) ? '1' : '0');
 

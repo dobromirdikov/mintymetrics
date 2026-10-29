@@ -442,7 +442,7 @@ class DatabaseTest extends IntegrationTestCase
 
             \MintyMetrics\db_init_with($db);
 
-            $this->assertSame('5', $db->querySingle("SELECT value FROM settings WHERE key = 'schema_version'"));
+            $this->assertSame((string) \MintyMetrics\SCHEMA_VERSION, $db->querySingle("SELECT value FROM settings WHERE key = 'schema_version'"));
             $this->assertSame(1, (int) $db->querySingle("SELECT COUNT(*) FROM sqlite_master WHERE name = 'login_attempts'"));
         });
     }
