@@ -20,7 +20,7 @@ function export_csv(string $type, string $site, ?string $from, ?string $to): voi
 
     // Sanitize type for filename (allow-list)
     $safeType = match ($type) {
-        'pageviews', 'pages', 'referrers', 'utm', 'countries', 'events', 'summaries' => $type,
+        'pageviews', 'pages', 'referrers', 'utm', 'countries', 'events', 'daily', 'summaries' => $type,
         default => 'export',
     };
     $filename = "mintymetrics-{$safeType}-{$from}-to-{$to}.csv";
@@ -119,8 +119,16 @@ function export_rows($output, string $type, string $site, string $from, string $
             csv_stream($output, $stmt, $params, true);
             break;
 
+        case 'daily':
+            // Same numbers as the dashboard chart: archived summaries plus recent raw hits
+            csv_row($output, ['Date', 'Pageviews', 'Unique Visitors']);
+            foreach (api_chart($site, $from, $to, $fromTs, $toTs)['days'] as $day) {
+                csv_row($output, [$day['date'], $day['pageviews'], $day['uniques']]);
+            }
+            break;
+
         case 'summaries':
-            // Daily totals kept after raw hits expire
+            // Archived per-site daily summaries (days whose raw hits were already summarized)
             csv_row($output, ['Date', 'Site', 'Pageviews', 'Unique Visitors', 'Single-Page Visit Rate', 'Avg Time on Page']);
             $swhere = 'date BETWEEN :from AND :to';
             $sparams = [':from' => $from, ':to' => $to];

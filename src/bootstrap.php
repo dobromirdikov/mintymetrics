@@ -141,8 +141,8 @@ if (isset($_GET['logout']) && $_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // All remaining routes require authentication
 if (!auth_check()) {
-    // Background requests (API, modal fragments) get a status the dashboard can act on
-    if (isset($_GET['api']) || isset($_GET['modal'])) {
+    // Background requests (API, modal fragments, AJAX form posts) get a status the dashboard can act on
+    if (is_background_request()) {
         auth_require();
     }
     render_login();

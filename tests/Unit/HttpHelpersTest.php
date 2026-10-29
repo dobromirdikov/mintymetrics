@@ -35,6 +35,27 @@ class HttpHelpersTest extends TestCase
         ];
     }
 
+    public function testBackgroundRequestDetection(): void
+    {
+        $get = $_GET;
+        try {
+            $_GET = [];
+            unset($_SERVER['HTTP_X_REQUESTED_WITH']);
+            $this->assertFalse(\MintyMetrics\is_background_request(), 'Page navigation gets the login page');
+            $_GET = ['export' => ''];
+            $this->assertFalse(\MintyMetrics\is_background_request(), 'CSV downloads are navigations too');
+            $_GET = ['api' => ''];
+            $this->assertTrue(\MintyMetrics\is_background_request());
+            $_GET = ['modal' => '1'];
+            $this->assertTrue(\MintyMetrics\is_background_request());
+            $_GET = ['settings' => ''];
+            $_SERVER['HTTP_X_REQUESTED_WITH'] = 'XMLHttpRequest';
+            $this->assertTrue(\MintyMetrics\is_background_request(), 'AJAX form posts get a 401');
+        } finally {
+            $_GET = $get;
+        }
+    }
+
     public function testJsStringEscapesBreakouts(): void
     {
         $out = \MintyMetrics\js_string("x'</script><script>alert(1)//\\\n");

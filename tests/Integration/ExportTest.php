@@ -72,4 +72,19 @@ class ExportTest extends IntegrationTestCase
         $this->assertSame(['Date', 'Site', 'Pageviews', 'Unique Visitors', 'Single-Page Visit Rate', 'Avg Time on Page'], $rows[0]);
         $this->assertSame('12', $rows[1][2]);
     }
+
+    public function testDailyExportCombinesSummariesAndRecentHits(): void
+    {
+        $yesterday = date('Y-m-d', strtotime('-1 day'));
+        self::$testDb->exec("INSERT INTO daily_summaries (date, site, pageviews, unique_visitors, bounce_rate, avg_time_on_page)
+            VALUES ('{$yesterday}', 'a.com', 12, 5, 0.4, 33.5)");
+        $this->insertHit(['site' => 'a.com', 'visitor_hash' => 'v1', 'created_at' => time() - 60]);
+        $this->insertHit(['site' => 'a.com', 'visitor_hash' => 'v1', 'created_at' => time() - 30]);
+
+        $rows = $this->export('daily');
+
+        $this->assertSame(['Date', 'Pageviews', 'Unique Visitors'], $rows[0]);
+        $this->assertSame([$yesterday, '12', '5'], $rows[1]);
+        $this->assertSame([date('Y-m-d'), '2', '1'], $rows[2], 'Recent, not yet summarized days are included');
+    }
 }

@@ -46,39 +46,39 @@ CSSBLOCK;
             </button>
             <div class="mm-site-selector__menu" id="siteSelectorMenu" role="listbox" hidden></div>
         </div>
-        <a href="?health" class="mm-nav-link" data-modal="health" title="Health">
-            <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v3.586L7.707 11.293a1 1 0 001.414 1.414l2-2A1 1 0 0011.5 10V7z"/></svg>
+        <a href="?health" class="mm-nav-link" data-modal="health" title="Health" aria-label="System health">
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v3.586L7.707 11.293a1 1 0 001.414 1.414l2-2A1 1 0 0011.5 10V7z"/></svg>
         </a>
-        <a href="?settings" class="mm-nav-link" data-modal="settings" title="Settings">
-            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
+        <a href="?settings" class="mm-nav-link" data-modal="settings" title="Settings" aria-label="Settings">
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
         </a>
-        <a href="?help" class="mm-nav-link" data-modal="help" title="Tracking Code">
-            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
+        <a href="?help" class="mm-nav-link" data-modal="help" title="Tracking Code" aria-label="Tracking code">
+            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
         </a>
         <form method="POST" action="' . e(script_path()) . '?logout" class="mm-nav-form">
             ' . csrf_field() . '
-            <button type="submit" class="mm-nav-link mm-nav-logout" title="Logout">
-                <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 3a1 1 0 011-1h12a1 1 0 011 1v4a1 1 0 01-2 0V4H5v12h10v-3a1 1 0 112 0v4a1 1 0 01-1 1H4a1 1 0 01-1-1V3z" clip-rule="evenodd"/><path d="M13.293 9.293a1 1 0 011.414 0l2 2a1 1 0 010 1.414l-2 2a1 1 0 01-1.414-1.414L14.586 12H7a1 1 0 110-2h7.586l-1.293-1.293a1 1 0 010-1.414z"/></svg>
+            <button type="submit" class="mm-nav-link mm-nav-logout" title="Logout" aria-label="Log out">
+                <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M3 3a1 1 0 011-1h12a1 1 0 011 1v4a1 1 0 01-2 0V4H5v12h10v-3a1 1 0 112 0v4a1 1 0 01-1 1H4a1 1 0 01-1-1V3z" clip-rule="evenodd"/><path d="M13.293 9.293a1 1 0 011.414 0l2 2a1 1 0 010 1.414l-2 2a1 1 0 01-1.414-1.414L14.586 12H7a1 1 0 110-2h7.586l-1.293-1.293a1 1 0 010-1.414z"/></svg>
             </button>
         </form>
     </nav>
 </header>
 
-<main class="mm-main">
+<main class="mm-main" data-today="' . \date('Y-m-d') . '" data-timezone="' . e(\date_default_timezone_get()) . '" data-now="' . \time() . '" data-max-days="' . MAX_RANGE_DAYS . '">
     <div class="mm-date-bar">
-        <div class="mm-date-presets">
-            <button data-range="today">Today</button>
-            <button data-range="yesterday">Yesterday</button>
-            <button data-range="7d" class="active">7 days</button>
-            <button data-range="30d">30 days</button>
-            <button data-range="90d">90 days</button>
-            <button data-range="custom">Custom</button>
+        <div class="mm-date-presets" role="group" aria-label="Date range">
+            <button type="button" data-range="today" aria-pressed="false">Today</button>
+            <button type="button" data-range="yesterday" aria-pressed="false">Yesterday</button>
+            <button type="button" data-range="7d" class="active" aria-pressed="true">7 days</button>
+            <button type="button" data-range="30d" aria-pressed="false">30 days</button>
+            <button type="button" data-range="90d" aria-pressed="false">90 days</button>
+            <button type="button" data-range="custom" aria-pressed="false" aria-controls="customDatePicker">Custom</button>
         </div>
         <div class="mm-date-custom" id="customDatePicker" hidden>
             <input type="date" id="dateFrom" aria-label="From date">
             <span>to</span>
             <input type="date" id="dateTo" aria-label="To date">
-            <button id="applyDateRange" class="mm-btn mm-btn--primary">Apply</button>
+            <button type="button" id="applyDateRange" class="mm-btn mm-btn--primary">Apply</button>
         </div>
     </div>
 
@@ -101,14 +101,17 @@ CSSBLOCK;
         </div>
         <div class="mm-card mm-card--stat mm-card--live">
             <span class="mm-card__label">Active Now</span>
-            <span class="mm-card__value" id="valLive">&mdash;</span>
-            <span class="mm-pulse"></span>
+            <span class="mm-card__value" id="valLive" aria-live="polite">&mdash;</span>
+            <span class="mm-pulse" aria-hidden="true"></span>
         </div>
     </div>
 
     <div class="mm-card mm-card--chart">
-        <div class="mm-card__header"><h2>Visitors &amp; Pageviews</h2></div>
-        <div class="mm-chart-container" id="mainChart">
+        <div class="mm-card__header">
+            <h2 id="mainChartHeading">Visitors &amp; Pageviews</h2>
+            <button type="button" class="mm-export-btn" data-export="daily" title="Export daily totals as CSV" aria-label="Export daily totals as CSV"></button>
+        </div>
+        <div class="mm-chart-container" id="mainChart" role="img" aria-labelledby="mainChartHeading">
             <div class="mm-loading"><div class="mm-spinner"></div></div>
         </div>
     </div>
@@ -118,7 +121,7 @@ CSSBLOCK;
             <div class="mm-card">
                 <div class="mm-card__header">
                     <h2>Top Pages</h2>
-                    <button class="mm-export-btn" data-export="pages" title="Export CSV"></button>
+                    <button type="button" class="mm-export-btn" data-export="pages" title="Export CSV" aria-label="Export Top Pages as CSV"></button>
                 </div>
                 <table class="mm-table" id="tablePages">
                     <thead><tr><th>Page</th><th>Views</th><th>Uniques</th></tr></thead>
@@ -129,7 +132,7 @@ CSSBLOCK;
             <div class="mm-card">
                 <div class="mm-card__header">
                     <h2>Referrers</h2>
-                    <button class="mm-export-btn" data-export="referrers" title="Export CSV"></button>
+                    <button type="button" class="mm-export-btn" data-export="referrers" title="Export CSV" aria-label="Export Referrers as CSV"></button>
                 </div>
                 <table class="mm-table" id="tableReferrers">
                     <thead><tr><th>Source</th><th>Visitors</th></tr></thead>
@@ -140,10 +143,10 @@ CSSBLOCK;
             <div class="mm-card">
                 <div class="mm-card__header">
                     <h2>UTM Campaigns</h2>
-                    <div class="mm-tab-bar">
-                        <button class="mm-tab active" data-utm="source">Source</button>
-                        <button class="mm-tab" data-utm="medium">Medium</button>
-                        <button class="mm-tab" data-utm="campaign">Campaign</button>
+                    <div class="mm-tab-bar" role="group" aria-label="UTM parameter">
+                        <button type="button" class="mm-tab active" data-utm="source" aria-pressed="true">Source</button>
+                        <button type="button" class="mm-tab" data-utm="medium" aria-pressed="false">Medium</button>
+                        <button type="button" class="mm-tab" data-utm="campaign" aria-pressed="false">Campaign</button>
                     </div>
                 </div>
                 <table class="mm-table" id="tableUTM">
@@ -158,7 +161,7 @@ CSSBLOCK;
                 <div class="mm-card__header">
                     <h2 id="eventsHeading">Top Events</h2>
                     <button class="mm-events-back" id="eventsBack" hidden type="button">&larr; All events</button>
-                    <button class="mm-export-btn" data-export="events" title="Export CSV"></button>
+                    <button type="button" class="mm-export-btn" data-export="events" title="Export CSV" aria-label="Export Top Events as CSV"></button>
                 </div>
                 <table class="mm-table" id="tableEvents">
                     <thead><tr><th>Event</th><th>Count</th><th>Users</th></tr></thead>
@@ -188,10 +191,10 @@ CSSBLOCK;
             <div class="mm-card">
                 <div class="mm-card__header">
                     <h2>Devices</h2>
-                    <div class="mm-tab-bar">
-                        <button class="mm-tab active" data-device="type">Type</button>
-                        <button class="mm-tab" data-device="browser">Browser</button>
-                        <button class="mm-tab" data-device="os">OS</button>
+                    <div class="mm-tab-bar" role="group" aria-label="Device breakdown">
+                        <button type="button" class="mm-tab active" data-device="type" aria-pressed="true">Type</button>
+                        <button type="button" class="mm-tab" data-device="browser" aria-pressed="false">Browser</button>
+                        <button type="button" class="mm-tab" data-device="os" aria-pressed="false">OS</button>
                     </div>
                 </div>
                 <div class="mm-bar-chart" id="chartDevices">
@@ -231,10 +234,10 @@ CSSBLOCK;
 
     echo '</footer>
 <div class="mm-modal-overlay" id="mmModal" hidden>
-    <div class="mm-modal">
+    <div class="mm-modal" role="dialog" aria-modal="true" aria-labelledby="mmModalTitle" tabindex="-1">
         <div class="mm-modal-header">
             <h2 id="mmModalTitle"></h2>
-            <button class="mm-modal-close" type="button">&times;</button>
+            <button class="mm-modal-close" type="button" aria-label="Close">&times;</button>
         </div>
         <div class="mm-modal-body" id="mmModalBody"></div>
     </div>

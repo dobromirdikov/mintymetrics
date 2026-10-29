@@ -4,6 +4,15 @@ namespace MintyMetrics;
 // ─── HTTP, Session & CLI Helpers ────────────────────────────────────────────
 
 /**
+ * Whether this request comes from dashboard JavaScript (API calls, modal fragments,
+ * AJAX form posts) and needs a JSON 401 instead of the login page.
+ */
+function is_background_request(): bool {
+    return isset($_GET['api']) || isset($_GET['modal'])
+        || \strtolower($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'xmlhttprequest';
+}
+
+/**
  * Whether the current request reached the client over HTTPS. X-Forwarded-Proto is
  * only trusted from a private/loopback peer (a reverse proxy on the same host or
  * network), since anyone can send that header directly.

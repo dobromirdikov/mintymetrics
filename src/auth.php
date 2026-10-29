@@ -56,7 +56,7 @@ function auth_establish_session(string $verifiedHash): void {
 function auth_require(): void {
     if (!auth_check()) {
         \http_response_code(401);
-        if (isset($_GET['api']) || isset($_GET['modal']) || isset($_GET['export'])) {
+        if (is_background_request()) {
             \header('Content-Type: application/json');
             \header('Cache-Control: no-store');
             echo \json_encode(['error' => 'session_expired']);
