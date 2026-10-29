@@ -33,7 +33,8 @@ Drop one file. Know your audience. No cookies, no config, no complexity.
 - Country-level geolocation (optional, via free IP2Location LITE database)
 - Interactive world map
 - Date range picker (today, 7d, 30d, 90d, custom)
-- CSV export (pageviews, events, and aggregates)
+- CSV export (pageviews, events, aggregates, and daily totals)
+- Light and dark dashboard (follows your system setting)
 - Bot filtering (User-Agent patterns + JS verification)
 - DNT / Global Privacy Control support
 - Automatic data retention and daily summarization
@@ -138,14 +139,17 @@ Settings are managed through the dashboard UI (**Settings** page). Key options:
 | Max DB size | 100 MB | Warning threshold for database size |
 | Respect DNT | On | Honor Do Not Track / Global Privacy Control headers |
 | Geolocation | On | Enable country tracking (requires IP2Location LITE download) |
-| Rate limit | 1 second | Minimum interval between hits from the same IP |
 | Allowed domains | — | Domain whitelist for hub mode |
+| Allow subdomains | Off | Also accept subdomains of each allowed domain (e.g. `blog.example.com`) |
+| Timezone | Detected during setup | Days in charts, summaries and retention start at midnight here |
 
+> **Rate limiting:** exact repeats of the same pageview or event within a second are dropped, and each IP may send at most 300 hits per minute.
+>
 > **Rate limiting behind a reverse proxy:** Rate limiting uses `REMOTE_ADDR`. Behind a reverse proxy, all visitors share the proxy's IP. This is the safe default (`X-Forwarded-For` is spoofable). If your proxy sets a trusted header, configure rate limiting at the proxy level instead.
 
 ### Geolocation
 
-Country tracking uses the free [IP2Location LITE](https://lite.ip2location.com/) database. It's not bundled to keep the file small. In Settings, you can either auto-download it with a free IP2Location token or manually upload the BIN file (~2 MB).
+Country tracking uses the free [IP2Location LITE](https://lite.ip2location.com/) database. It's not bundled to keep the file small. In Settings, you can either auto-download it with a free IP2Location token or manually upload the DB1 LITE ZIP or the BIN file inside it. The IPv6 edition (`IP2LOCATION-LITE-DB1.IPV6.BIN`) is used by default since it also covers IPv4; the IPv4-only edition works too.
 
 ## Building from Source
 

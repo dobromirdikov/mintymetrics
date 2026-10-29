@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-29
+
+A reliability, security and accuracy release. Upgrading is a drop-in file replacement:
+the database migrates itself (schema v1–v5 → v6) on the first request and keeps all data.
+
+### Upgrade notes
+- New installs ask for a one-time setup token, written to `.mm_setup_token.php` next to `analytics.php`
+- Days (charts, summaries, retention, the daily salt) now follow one timezone, set in Settings → Timezone. Until you choose one, the server's PHP timezone is used, as before
+- The database location is now pinned in `.mm_db_marker.php`. Existing installs are pinned automatically to the database they already use
+- For PHP-site tracking, use `include_once` (the help panel shows the updated snippet)
+- On nginx/Caddy, block the new files too (see README → Database Protection)
+
+### Added
+- Timezone setting, and an "allow subdomains" option for the domain allow-list
+- Daily totals CSV export from the chart card (`?export&type=daily`, matching the chart)
+- Dark mode that follows the operating system
+- IP2Location IPv6 database support; geo uploads accept a ZIP or a BIN file
+- Bot detection for more crawlers, and detection of in-app browsers (Instagram, Facebook, Google app, Android/iOS WebViews)
+
+### Fixed
+- Data loss: cleanup could delete raw hits that were never summarized (servers outside UTC, or the database size limit)
+- Wrong totals: bounce rate and average time are weighted correctly across summarized days; top pages are ranked by views; summarized days are included in every breakdown; UTM campaigns are no longer double counted
+- Time on page is attributed to the exact pageview, counts only visible time, and survives the daily salt rotation
+- Single-page apps: `pushState`, `replaceState` and back/forward navigation are tracked; back/forward-cache restores are not counted as new referrals; prerendered pages are counted only when shown
+- "database is locked" errors under concurrent traffic
+- Rate limiting no longer drops legitimate repeat pageviews, and caps floods per IP
+- Sensitive query parameters (tokens, emails, passwords) and click IDs are stripped from stored URLs
+- IPv6 visitors are grouped per /64, and IPv4-mapped addresses are treated as IPv4
+- Dashboard: date presets use the dashboard's timezone, stale responses can no longer overwrite newer ones, panels show errors instead of spinning forever, device bars and map colors render under the strict CSP, and the custom date range is validated
+- Accessibility: keyboard-operable site selector, focus-trapped dialogs, visible focus, better text contrast, labelled charts and buttons
+
+### Security
+- Login limits per client and globally, reserved before the password check; sessions are bound to the current password, rotated on sign-in, and stored in a protected directory
+- One-time setup token; setup runs exactly once
+- `.htaccess` rules now also protect SQLite WAL/SHM/journal files, the marker and the setup token; the health check reports real web-root exposure
+- CSV exports are protected against formula injection
+- Security headers (frame, referrer, nosniff, no-store) and trusted-proxy-only HTTPS detection
+
 ## [1.1.1] - 2026-07-29
 
 ### Fixed
